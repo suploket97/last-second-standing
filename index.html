@@ -139,16 +139,9 @@ button:disabled{cursor:default;opacity:.55}
 @media (prefers-reduced-motion:reduce){.shake,.big.go{animation:none}.big{transition:none}}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body>
-
-<!-- SETUP NOTICE (shown only when firebase-config.js is not filled in) -->
-<div class="wrap" id="cfgNotice" hidden>
-  <section class="panel notice">
-    <h2>Almost ready</h2>
-    <p>This copy is not connected to a Firebase project yet. Open <code>firebase-config.js</code>, paste your project's web config, and reload. The README walks you through it in about ten minutes.</p>
-  </section>
-</div>
 
 <!-- HOME -->
 <div class="wrap" id="home">
@@ -170,7 +163,7 @@ button:disabled{cursor:default;opacity:.55}
     <section class="panel">
       <span class="label">Big screen</span>
       <h2>Host a game</h2>
-      <p class="hint">Set up the room on a laptop or TV. After you start, this screen becomes the countdown display.</p>
+      <p class="hint">Set up the room on a laptop or TV. After you start, this screen becomes the countdown display. Keep this page open while you play: it runs the game.</p>
       <p class="err" id="hostErr"></p>
       <button class="primary cta" id="goHost">Create a room</button>
       <button id="resumeHost" hidden>Resume room</button>
@@ -190,6 +183,7 @@ button:disabled{cursor:default;opacity:.55}
       <span class="join-url" id="aUrl"></span>
       <span class="label" style="margin-top:6px">Game PIN</span>
       <span class="code" id="aCode">····</span>
+      <span class="conn" id="hConn"></span>
     </div>
     <img class="qr" id="aQr" alt="QR code that opens the join page with this PIN filled in" hidden>
   </section>
@@ -274,124 +268,142 @@ button:disabled{cursor:default;opacity:.55}
   </div>
 </div>
 
-<script type="module">
-import { firebaseConfig } from "./firebase-config.js";
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getDatabase, ref, set, update, get, remove, onValue, onDisconnect, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
-
+<script>
+"use strict";
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmt=ms=>{ms=Math.max(0,ms);const s=ms/1000,m=Math.floor(s/60);return m+":"+(s%60).toFixed(1).padStart(4,"0")};
 const TIMES=[30,60,90,120], HOLDS=[0,1,2,3];
 const VIEWS=["home","admin","show","player"];
-function view(id){VIEWS.forEach(v=>$(v).hidden=v!==id);window.scrollTo(0,0)}
+function view(id){VIEWS.forEach(v=>$(v).hidden=v!==id);window.scrollTo(0,0);keepAwake(id!=="home")}
 const store={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
 const joinBase=location.origin+location.pathname;
 const prettyUrl=joinBase.replace(/^https?:\/\//,"").replace(/index\.html$/,"").replace(/\/$/,"");
+const PREFIX="last-second-standing-v1-";   // keeps our room IDs apart from other apps on the shared PeerJS service
+const peerOk=typeof window.Peer==="function";
+function rid(n){const a="abcdefghijkmnpqrstuvwxyz23456789";let s="";for(let i=0;i<n;i++)s+=a[Math.floor(Math.random()*a.length)];return s}
 
-/* ---------- Firebase ---------- */
-const configured=firebaseConfig&&firebaseConfig.apiKey&&!/PASTE/.test(firebaseConfig.apiKey)&&firebaseConfig.databaseURL&&!/your-project/.test(firebaseConfig.databaseURL);
-let db=null, uid=null, authReady;
-if(!configured){
-  $("cfgNotice").hidden=false;
-  authReady=Promise.reject(new Error("not configured"));authReady.catch(()=>{});
-}else{
-  const app=initializeApp(firebaseConfig);
-  db=getDatabase(app);
-  authReady=signInAnonymously(getAuth(app)).then(c=>(uid=c.user.uid));
-  authReady.catch(()=>{});
-  onValue(ref(db,".info/connected"),s=>{connected=!!s.val();onConnChange()});
-}
-let connected=false;
-function onConnChange(){
-  const c=$("pConn");c.textContent=connected?"":"Reconnecting…";c.classList.toggle("bad",!connected);
-  if(connected&&code&&!$("admin").hidden||connected&&code&&!$("show").hidden){armHostDisconnect();publish()}
-  if(connected&&P.code)armPlayerDisconnect();
-}
-const rp=(...parts)=>ref(db,["rooms",...parts].join("/"));
+/* keep screens awake during a game (ignored where not supported) */
+let wake=null;
+async function keepAwake(on){try{if(on&&!wake&&navigator.wakeLock){wake=await navigator.wakeLock.request("screen");wake.addEventListener("release",()=>wake=null)}else if(!on&&wake){wake.release();wake=null}}catch(e){}}
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&!$("home").hidden)keepAwake(true)});
 
 /* ============================== HOST ============================== */
 const G={phase:"lobby",total:60,rule:"starter",minHold:1,blind:false,players:[],idx:0,running:false,
   remaining:60000,remStart:0,turnStart:0,round:0,log:[],loser:-1,winner:-1,nextStarter:0,seq:0,raf:0,canStop:false,holdTimer:0,tag:"",msg:""};
-let code="", lastPress={}, kicked=new Set(), roster={}, unsubPlayers=null, localId=0;
+let code="", hostPeer=null, roster={}, lastPress={}, kicked=new Set(), localId=0;
 
-function genCode(){const a="abcdefghjkmnpqrstuvwxyz23456789";let s="";for(let i=0;i<4;i++)s+=a[Math.floor(Math.random()*a.length)];return s}
+function openHostPeer(c){
+  return new Promise((res,rej)=>{
+    const p=new Peer(PREFIX+c,{debug:0});
+    const fail=e=>{p.off("open");try{p.destroy()}catch(_){}rej(e)};
+    p.once("open",()=>{p.off("error",fail);res(p)});
+    p.once("error",fail);
+  });
+}
+async function claimRoom(c,tries){
+  let last;
+  for(let t=0;t<tries;t++){
+    try{return await openHostPeer(c)}catch(e){last=e;if(e&&e.type==="unavailable-id"){await new Promise(r=>setTimeout(r,1500));continue}throw e}
+  }
+  throw last;
+}
 
 async function createRoom(){
-  $("hostErr").textContent="";$("goHost").disabled=true;$("goHost").textContent="Creating…";
+  $("hostErr").textContent="";
+  if(!peerOk){$("hostErr").textContent="The connection library did not load. Check your internet connection and reload.";return}
+  $("goHost").disabled=true;$("goHost").textContent="Creating…";
   try{
-    await authReady;
-    let c="";
-    for(let t=0;t<8;t++){
-      const cand=genCode();
-      const snap=await get(rp(cand,"host"));
-      if(snap.exists())continue;
-      try{await set(rp(cand,"host"),uid);c=cand;break}catch(e){/* taken in the meantime */}
+    let p=null,c="";
+    for(let t=0;t<6&&!p;t++){
+      c=rid(4);
+      try{p=await openHostPeer(c)}catch(e){if(!(e&&e.type==="unavailable-id"))throw e}
     }
-    if(!c)throw new Error("no code");
-    await set(rp(c,"created"),serverTimestamp());
+    if(!p)throw new Error("no code");
     Object.assign(G,{phase:"lobby",players:[],round:0,winner:-1,loser:-1,log:[]});
-    lastPress={};kicked=new Set();
-    attachHost(c);view("admin");renderSetup();publish();
+    roster={};lastPress={};kicked=new Set();
+    attachHost(c,p);view("admin");renderSetup();publish();
   }catch(e){
-    $("hostErr").textContent=configured?"Could not create a room. Check your internet connection and the Firebase setup, then try again.":"Connect a Firebase project first (see the README).";
+    $("hostErr").textContent="Could not create a room. Check your internet connection and try again.";
   }
   $("goHost").disabled=false;$("goHost").textContent="Create a room";
 }
-function attachHost(c){
-  code=c;store.set("lss-host",c);
+
+function attachHost(c,p){
+  code=c;hostPeer=p;
   const CODE=c.toUpperCase();
   $("aCode").textContent=CODE;$("sCode").textContent=CODE;
   $("aUrl").textContent=prettyUrl;$("sUrl").textContent=prettyUrl;
-  try{
-    if(window.qrcode){const qr=qrcode(0,"M");qr.addData(joinBase+"?pin="+CODE);qr.make();$("aQr").src=qr.createDataURL(5,2);$("aQr").hidden=false}
-  }catch(e){$("aQr").hidden=true}
-  if(unsubPlayers)unsubPlayers();
-  unsubPlayers=onValue(rp(c,"players"),s=>onPlayers(s.val()||{}));
-  armHostDisconnect();
+  try{if(window.qrcode){const qr=qrcode(0,"M");qr.addData(joinBase+"?pin="+CODE);qr.make();$("aQr").src=qr.createDataURL(5,2);$("aQr").hidden=false}}catch(e){$("aQr").hidden=true}
+  p.on("connection",conn=>{
+    conn.on("data",d=>onHostMsg(conn,d));
+    conn.on("close",()=>onHostClose(conn));
+    conn.on("error",()=>onHostClose(conn));
+  });
+  // lost the matchmaking server: open games keep working, but new players can't join until it comes back
+  p.on("disconnected",()=>{setHostConn(false);setTimeout(()=>{try{if(hostPeer===p&&!p.destroyed)p.reconnect()}catch(e){}},1500)});
+  p.on("open",()=>setHostConn(true));
+  p.on("error",e=>{if(e&&e.type==="network")setHostConn(false)});
+  setHostConn(true);
 }
-function armHostDisconnect(){if(code&&db)onDisconnect(rp(code,"state","on")).set(false).catch(()=>{})}
+function setHostConn(ok){const el=$("hConn");if(el){el.textContent=ok?"":"Reconnecting to the join service… players already in the game are not affected.";el.classList.toggle("bad",!ok)}}
 
-function publish(){
-  if(!code||!db)return;G.seq++;
-  const s={ph:G.phase,r:G.round,rule:G.rule,i:G.idx,cs:G.canStop?1:0,lo:G.loser,w:G.winner,seq:G.seq,t:G.log.length,on:true,
-    total:G.total,mh:G.minHold,bl:G.blind?1:0,rem:Math.round(G.running?G.remStart:G.remaining),ns:G.nextStarter,tag:G.tag,msg:G.msg,
+function onHostMsg(conn,d){
+  if(!d||typeof d!=="object")return;
+  if(d.t==="hello"){
+    const pid=String(d.pid||"").slice(0,40);if(!pid)return;
+    if(kicked.has(pid)){try{conn.send({t:"kicked"})}catch(e){}setTimeout(()=>conn.close(),300);return}
+    const name=String(d.name||"Player").trim().slice(0,20)||"Player";
+    const press=Number(d.press)||0;
+    const old=roster[pid];
+    if(old&&old.conn&&old.conn!==conn){try{old.conn.close()}catch(e){}}
+    conn.__pid=pid;
+    roster[pid]={name,online:true,conn};
+    lastPress[pid]=Math.max(lastPress[pid]??press,press);
+    if(G.phase==="lobby"&&!G.players.some(x=>x.id===pid)){
+      let n=name,k=2;while(G.players.some(x=>x.n.toLowerCase()===n.toLowerCase()))n=name+" "+(k++);
+      G.players.push({id:pid,n,out:false,l:0,phone:true});
+    }
+    publish();refreshHost();return;
+  }
+  if(d.t==="press"){
+    const pid=conn.__pid;if(!pid)return;
+    const n=Number(d.n)||0;
+    if(n<=lastPress[pid])return;
+    lastPress[pid]=n;
+    const pl=G.players.find(x=>x.id===pid);
+    if(pl&&G.players[G.idx]===pl&&(G.phase==="ready"||G.phase==="running"))doPress();
+    else sendState(conn);
+  }
+}
+function onHostClose(conn){
+  const pid=conn.__pid;if(!pid||!roster[pid]||roster[pid].conn!==conn)return;
+  roster[pid].online=false;roster[pid].conn=null;
+  if(G.phase==="lobby"){G.players=G.players.filter(x=>x.id!==pid);publish()}
+  refreshHost();
+}
+function refreshHost(){if(!$("admin").hidden)renderSetup();if(!$("show").hidden&&!$("stage").hidden)renderShow()}
+
+function stateObj(){
+  return {ph:G.phase,r:G.round,rule:G.rule,i:G.idx,cs:G.canStop?1:0,lo:G.loser,w:G.winner,seq:G.seq,t:G.log.length,on:true,
     pl:G.players.map(x=>({id:x.id,n:x.n,o:x.out?1:0,l:x.l}))};
-  set(rp(code,"state"),s).catch(()=>{});
 }
-
-function onPlayers(all){
-  roster=all;let changed=false;
-  for(const [id,pr] of Object.entries(all)){
-    if(!pr||typeof pr!=="object")continue;
-    const press=Number(pr.press)||0;
-    let pl=G.players.find(x=>x.id===id);
-    if(!pl&&!kicked.has(id)&&G.phase==="lobby"&&pr.online!==false){
-      const base=String(pr.name||"Player").slice(0,20);
-      let n=base,k=2;while(G.players.some(x=>x.n.toLowerCase()===n.toLowerCase()))n=base+" "+(k++);
-      pl={id,n,out:false,l:0,phone:true};G.players.push(pl);changed=true;
-    }
-    if(!(id in lastPress)){lastPress[id]=press;continue}
-    if(press>lastPress[id]){
-      lastPress[id]=press;
-      if(pl&&G.players[G.idx]===pl&&(G.phase==="ready"||G.phase==="running")){doPress();changed=false;continue}
-      changed=true; // let that phone resync
-    }
-  }
-  if(G.phase==="lobby"){
-    const before=G.players.length;
-    G.players=G.players.filter(x=>!x.phone||(all[x.id]&&all[x.id].online!==false));
-    if(G.players.length!==before)changed=true;
-  }
-  if(changed)publish();
-  if(!$("admin").hidden)renderSetup();
-  if(!$("show").hidden)renderShow();
+function sendState(conn){try{if(conn&&conn.open)conn.send({t:"state",s:stateObj()})}catch(e){}}
+function publish(){
+  if(!code)return;G.seq++;
+  const msg={t:"state",s:stateObj()};
+  for(const r of Object.values(roster)){if(r.online&&r.conn&&r.conn.open){try{r.conn.send(msg)}catch(e){}}}
+  saveHostSnap();
+}
+function saveHostSnap(){
+  store.set("lss-host",JSON.stringify({code,at:Date.now(),G:{phase:G.phase,total:G.total,rule:G.rule,minHold:G.minHold,blind:G.blind,round:G.round,idx:G.idx,
+    remaining:Math.round(G.running?G.remStart:G.remaining),loser:G.loser,winner:G.winner,nextStarter:G.nextStarter,tag:G.tag,msg:G.msg,
+    players:G.players.map(p=>({id:p.id,n:p.n,out:p.out,l:p.l,phone:p.phone}))}}));
 }
 
 function renderSetup(){
   $("plist").innerHTML=G.players.length?G.players.map((p,i)=>{
-    const r=roster[p.id],on=r&&r.online!==false;
+    const on=p.phone&&roster[p.id]&&roster[p.id].online;
     return `<li><span class="num">${i+1}</span><span class="nm">${esc(p.n)}</span>
     ${p.phone?`<span class="dev ${on?"on":""}">${on?"Phone":"Offline"}</span>`:`<span class="dev">Host presses</span>`}
     <button class="icon-btn" data-up="${i}" aria-label="Move ${esc(p.n)} up" ${i?"":"disabled"}>↑</button>
@@ -405,7 +417,10 @@ function renderSetup(){
 }
 $("plist").onclick=e=>{
   const b=e.target.closest("button");if(!b)return;
-  if(b.dataset.del!=null){const [x]=G.players.splice(+b.dataset.del,1);if(x&&x.phone){kicked.add(x.id);remove(rp(code,"players",x.id)).catch(()=>{})}}
+  if(b.dataset.del!=null){
+    const [x]=G.players.splice(+b.dataset.del,1);
+    if(x&&x.phone){kicked.add(x.id);const r=roster[x.id];if(r&&r.conn){try{r.conn.send({t:"kicked"})}catch(e){}const c=r.conn;setTimeout(()=>{try{c.close()}catch(e){}},300)}delete roster[x.id]}
+  }
   if(b.dataset.up!=null){const i=+b.dataset.up;[G.players[i-1],G.players[i]]=[G.players[i],G.players[i-1]]}
   renderSetup();publish();
 };
@@ -413,48 +428,42 @@ $("addForm").onsubmit=e=>{e.preventDefault();const n=$("newName").value.trim().s
   if(G.players.some(p=>p.n.toLowerCase()===n.toLowerCase())){$("setupErr").textContent=`${n} is already in the list. Use a different name.`;return}
   G.players.push({id:"local-"+(++localId)+"-"+Date.now().toString(36),n,out:false,l:0,phone:false});
   $("newName").value="";$("setupErr").textContent="";renderSetup();publish();$("newName").focus()};
-$("timeSeg").onclick=e=>{const b=e.target.closest("button");if(b){G.total=+b.dataset.t;renderSetup();publish()}};
-$("customTime").onchange=e=>{const v=Math.round(+e.target.value);if(v>=5&&v<=600)G.total=v;renderSetup();publish()};
-$("holdSeg").onclick=e=>{const b=e.target.closest("button");if(b){G.minHold=+b.dataset.h;renderSetup();publish()}};
-$("ruleSeg").onclick=e=>{const b=e.target.closest("button");if(b){G.rule=b.dataset.rule;renderSetup();publish()}};
-$("blind").onchange=e=>{G.blind=e.target.checked;publish()};
+$("timeSeg").onclick=e=>{const b=e.target.closest("button");if(b){G.total=+b.dataset.t;renderSetup();saveHostSnap()}};
+$("customTime").onchange=e=>{const v=Math.round(+e.target.value);if(v>=5&&v<=600)G.total=v;renderSetup();saveHostSnap()};
+$("holdSeg").onclick=e=>{const b=e.target.closest("button");if(b){G.minHold=+b.dataset.h;renderSetup();saveHostSnap()}};
+$("ruleSeg").onclick=e=>{const b=e.target.closest("button");if(b){G.rule=b.dataset.rule;renderSetup();saveHostSnap()}};
+$("blind").onchange=e=>{G.blind=e.target.checked;saveHostSnap()};
 $("goHost").onclick=createRoom;
-$("adminBack").onclick=async()=>{
+$("adminBack").onclick=()=>{
   stopClock();
-  if(unsubPlayers){unsubPlayers();unsubPlayers=null}
-  const c=code;code="";store.del("lss-host");
-  if(c){try{await onDisconnect(rp(c,"state","on")).cancel()}catch(e){} remove(rp(c)).catch(()=>{})}
+  for(const r of Object.values(roster)){if(r.conn){try{r.conn.send({t:"closed"})}catch(e){}}}
+  const p=hostPeer;hostPeer=null;code="";roster={};store.del("lss-host");
+  setTimeout(()=>{try{p&&p.destroy()}catch(e){}},300);
   checkResume();view("home");
 };
 
-/* resume a room after a refresh */
-async function checkResume(){
-  const c=store.get("lss-host");$("resumeHost").hidden=true;
-  if(!c||!configured)return;
-  try{
-    await authReady;
-    const h=await get(rp(c,"host"));
-    if(h.val()===uid){$("resumeHost").hidden=false;$("resumeHost").textContent="Resume room "+c.toUpperCase()}
-    else if(!h.exists())store.del("lss-host"); // room was closed
-  }catch(e){}
-}
+/* resume after the host page refreshes */
+function hostSnap(){try{const s=JSON.parse(store.get("lss-host")||"null");if(s&&s.code&&Date.now()-s.at<6*3600e3)return s}catch(e){}return null}
+function checkResume(){const s=hostSnap();$("resumeHost").hidden=!s;if(s)$("resumeHost").textContent="Resume room "+s.code.toUpperCase()}
 $("resumeHost").onclick=async()=>{
-  const c=store.get("lss-host");if(!c)return;
+  const snap=hostSnap();if(!snap||!peerOk)return;
+  $("resumeHost").disabled=true;$("resumeHost").textContent="Reopening room…";$("hostErr").textContent="";
   try{
-    const s=(await get(rp(c,"state"))).val()||{};
-    const all=(await get(rp(c,"players"))).val()||{};
-    Object.assign(G,{total:s.total||60,rule:s.rule||"starter",minHold:s.mh??1,blind:!!s.bl,round:s.r||0,idx:s.i||0,
-      loser:s.lo??-1,winner:s.w??-1,nextStarter:s.ns||0,tag:s.tag||"",msg:s.msg||"",log:[],running:false,canStop:false,
-      remaining:s.rem||((s.total||60)*1000),
-      players:(s.pl||[]).map(x=>({id:x.id,n:x.n,out:!!x.o,l:x.l||0,phone:!String(x.id).startsWith("local-")}))});
-    lastPress={};for(const [id,p] of Object.entries(all))lastPress[id]=Number(p&&p.press)||0;
-    attachHost(c);
-    const ph=s.ph||"lobby";
-    if(ph==="lobby"){G.phase="lobby";view("admin");renderSetup()}
-    else if(ph==="roundover"||ph==="gameover"){G.phase=ph;view("show");showResult()}
+    const p=await claimRoom(snap.code,8);
+    const g=snap.G;
+    Object.assign(G,{total:g.total,rule:g.rule,minHold:g.minHold,blind:g.blind,round:g.round,idx:g.idx,remaining:g.remaining,
+      loser:g.loser,winner:g.winner,nextStarter:g.nextStarter,tag:g.tag,msg:g.msg,log:[],running:false,canStop:false,
+      players:g.players.map(x=>({...x}))});
+    roster={};lastPress={};kicked=new Set();
+    attachHost(snap.code,p);
+    if(g.phase==="lobby"){G.phase="lobby";view("admin");renderSetup()}
+    else if(g.phase==="roundover"||g.phase==="gameover"){G.phase=g.phase;view("show");showResult()}
     else{G.phase="ready";view("show");$("stage").hidden=false;$("resultPanel").hidden=true;renderShow()}
     publish();
-  }catch(e){$("hostErr").textContent="Could not resume that room. Create a new one instead.";store.del("lss-host");$("resumeHost").hidden=true}
+  }catch(e){
+    $("hostErr").textContent="Could not reopen that room. Wait a few seconds and try again, or create a new room.";
+  }
+  $("resumeHost").disabled=false;checkResume();
 };
 
 /* ---------- game flow ---------- */
@@ -497,7 +506,7 @@ function tick(){
   if(G.remaining<=0){G.remaining=0;stopClock();timeUp();return}
   drawClock();G.raf=requestAnimationFrame(tick);
 }
-// keep the clock honest if the host tab is hidden (rAF pauses in background tabs)
+// background tabs pause animation frames, so check the clock on a timer as well
 setInterval(()=>{if(G.running&&document.hidden){G.remaining=G.remStart-(performance.now()-G.turnStart);if(G.remaining<=0){G.remaining=0;stopClock();timeUp()}}},250);
 
 function drawClock(){
@@ -517,7 +526,7 @@ function renderShow(){
   const st=$("state");
   if(G.running){st.textContent=G.canStop?"Clock running":"Clock running · Stop locked";st.className="state run"}
   else{st.textContent=cur&&cur.phone?`Waiting for ${cur.n} to press Start`:"Waiting to start";st.className="state"}
-  $("queue").innerHTML=G.players.map((q,i)=>{const r=roster[q.id],off=q.phone&&!(r&&r.online!==false);
+  $("queue").innerHTML=G.players.map((q,i)=>{const off=q.phone&&!(roster[q.id]&&roster[q.id].online);
     return `<span class="chip ${i===G.idx&&(G.phase==="ready"||G.phase==="running")?"now":""} ${q.out?"out":""} ${off?"off":""}" title="${off?"Phone offline":""}">${esc(q.n)}${q.l&&G.rule==="starter"?`<span class="l">×${q.l}</span>`:""}</span>`}).join("");
   $("hostPress").textContent=cur?(G.running?`Stop for ${cur.n}`:`Start for ${cur.n}`):"Press for player";
   $("log").innerHTML=G.log.length?G.log.map(l=>`<li class="${l.lose?"lose":""}"><span>${esc(l.n)}</span><span>${l.lose?"caught at 0":"held "+(l.ms/1000).toFixed(2)+"s"}</span></li>`).reverse().join("")
@@ -557,12 +566,19 @@ $("nextRound").onclick=()=>{
   if(G.phase==="gameover"){G.players.forEach(p=>{p.out=false;p.l=0});G.round=0;G.winner=-1;startRound(0);return}
   startRound(G.nextStarter);
 };
-function toSetup(){stopClock();G.phase="lobby";onPlayers(roster);publish();view("admin");renderSetup()}
+function toSetup(){
+  stopClock();G.phase="lobby";
+  // drop phone players who left; add anyone connected who joined mid-game
+  G.players=G.players.filter(x=>!x.phone||(roster[x.id]&&roster[x.id].online));
+  for(const [pid,r] of Object.entries(roster)){if(r.online&&!G.players.some(x=>x.id===pid))G.players.push({id:pid,n:r.name,out:false,l:0,phone:true})}
+  publish();view("admin");renderSetup();
+}
 $("backSetup").onclick=toSetup;
 $("quit").onclick=toSetup;
 
 /* ============================== PLAYER ============================== */
-const P={name:"",code:"",press:0,host:null,pendingSeq:-1,pendingAt:0,lastTurnKey:"",lastResultKey:"",unsub:[],wasListed:false};
+let pid=store.get("lss-pid");if(!pid){pid="p"+rid(12);store.set("lss-pid",pid)}
+const P={name:"",code:"",press:0,host:null,peer:null,conn:null,pendingSeq:-1,pendingAt:0,lastTurnKey:"",lastResultKey:"",retry:0,joined:false};
 (function prefill(){
   const q=new URLSearchParams(location.search).get("pin");
   if(q&&/^[a-z0-9]{4}$/i.test(q)){$("jCode").value=q.toUpperCase();setTimeout(()=>$("jName").focus(),50)}
@@ -576,44 +592,79 @@ $("joinForm").onsubmit=async e=>{
   const n=$("jName").value.trim().slice(0,20);
   if(c.length!==4){$("joinErr").textContent="Enter the 4-character PIN shown on the big screen.";return}
   if(!n){$("joinErr").textContent="Enter a nickname so the others know who is holding the clock.";return}
-  if(!configured){$("joinErr").textContent="This copy of the game is not connected to Firebase yet.";return}
+  if(!peerOk){$("joinErr").textContent="The connection library did not load. Check your internet connection and reload.";return}
   $("joinErr").textContent="";$("joinBtn").disabled=true;$("joinBtn").textContent="Joining…";
   store.set("lss-name",n);
-  try{
-    await authReady;
-    const h=await get(rp(c,"host"));
-    if(!h.exists()){$("joinErr").textContent="No game with that PIN. Check the big screen and try again.";resetJoin();return}
-    const mine=(await get(rp(c,"players",uid))).val();
-    P.press=mine&&Number(mine.press)||0;
-    await set(rp(c,"players",uid),{name:n,press:P.press,online:true,joinedAt:Date.now()});
-    P.name=n;P.code=c;P.host=null;P.wasListed=false;
-    armPlayerDisconnect();
-    P.unsub.forEach(u=>u());P.unsub=[
-      onValue(rp(c,"state"),s=>{P.host=s.val();renderPlayer()}),
-      onValue(rp(c,"players",uid),s=>{if(!s.exists()&&P.code===c&&P.joinedOnce){kickedOut()}else if(s.exists())P.joinedOnce=true})
-    ];
-    $("pName").textContent=n;$("pCode").textContent="PIN "+c.toUpperCase();
-    view("player");renderPlayer();
-  }catch(err){$("joinErr").textContent="Could not join. Check your internet connection and the PIN, then try again."}
+  const savedPress=Number(store.get("lss-press-"+c))||0;
+  P.name=n;P.code=c;P.press=savedPress;P.host=null;P.joined=false;
+  const ok=await connectToHost(true);
   resetJoin();
+  if(ok){$("pName").textContent=n;$("pCode").textContent="PIN "+c.toUpperCase();view("player");renderPlayer()}
 };
 function resetJoin(){$("joinBtn").disabled=false;$("joinBtn").textContent="Enter"}
-function armPlayerDisconnect(){if(P.code&&uid)onDisconnect(rp(P.code,"players",uid,"online")).set(false).catch(()=>{})}
-function leaveRoom(){
-  P.unsub.forEach(u=>u());P.unsub=[];
-  if(P.code&&uid){onDisconnect(rp(P.code,"players",uid,"online")).cancel().catch(()=>{});update(rp(P.code,"players",uid),{online:false}).catch(()=>{})}
-  P.code="";P.host=null;P.joinedOnce=false;
+
+function ensurePeer(){
+  return new Promise((res,rej)=>{
+    if(P.peer&&!P.peer.destroyed){
+      if(P.peer.open)return res(P.peer);
+      if(P.peer.disconnected){try{P.peer.reconnect()}catch(e){}}
+      P.peer.once("open",()=>res(P.peer));setTimeout(()=>rej(new Error("timeout")),8000);return;
+    }
+    const p=new Peer({debug:0});P.peer=p;
+    p.once("open",()=>res(p));
+    p.on("error",e=>{if(P.onPeerError)P.onPeerError(e)});
+    p.on("disconnected",()=>{setTimeout(()=>{try{if(!p.destroyed)p.reconnect()}catch(e){}},1500)});
+    setTimeout(()=>rej(new Error("timeout")),8000);
+  });
 }
-function kickedOut(){leaveRoom();view("home");$("joinErr").textContent="The host removed you from the game."}
-$("leave").onclick=()=>{leaveRoom();view("home")};
+
+/* first=true: report problems on the join form; otherwise keep retrying quietly */
+function connectToHost(first){
+  return new Promise(async resolve=>{
+    let done=false;const finish=v=>{if(!done){done=true;P.onPeerError=null;resolve(v)}};
+    try{await ensurePeer()}catch(e){if(first)$("joinErr").textContent="Could not reach the join service. Check your internet connection and try again.";return finish(false)}
+    const c=P.code;
+    P.onPeerError=e=>{
+      if(e&&e.type==="peer-unavailable"){if(first)$("joinErr").textContent="No game with that PIN. Check the big screen and try again.";finish(false)}
+    };
+    const conn=P.peer.connect(PREFIX+c,{reliable:true,metadata:{v:1}});
+    const timer=setTimeout(()=>{if(!conn.open){try{conn.close()}catch(e){}if(first)$("joinErr").textContent="Found the game but could not connect to it. Make sure your phone and the big screen are on the same Wi-Fi, then try again.";finish(false)}},12000);
+    conn.on("open",()=>{
+      clearTimeout(timer);
+      if(P.conn&&P.conn!==conn){try{P.conn.close()}catch(e){}}
+      P.conn=conn;P.joined=true;P.retry=0;
+      conn.send({t:"hello",pid,name:P.name,press:P.press});
+      setConn(true);finish(true);
+    });
+    conn.on("data",d=>{
+      if(!d||typeof d!=="object"||conn!==P.conn)return;
+      if(d.t==="state"){P.host=d.s;renderPlayer()}
+      else if(d.t==="kicked"){endPlayer("The host removed you from the game.")}
+      else if(d.t==="closed"){endPlayer("The host closed the room.")}
+    });
+    conn.on("close",()=>{if(conn===P.conn){P.conn=null;setConn(false);scheduleReconnect()}});
+  });
+}
+function scheduleReconnect(){
+  if(!P.code||!P.joined)return;
+  const wait=Math.min(5000,1000+P.retry*1000);P.retry++;
+  setTimeout(async()=>{if(P.code&&!P.conn){const ok=await connectToHost(false);if(!ok)scheduleReconnect()}},wait);
+}
+function setConn(ok){const c=$("pConn");c.textContent=ok?"":"Reconnecting to the big screen…";c.classList.toggle("bad",!ok);if(!ok)renderPlayer()}
+function endPlayer(msg){
+  const conn=P.conn;P.code="";P.joined=false;P.conn=null;P.host=null;
+  try{conn&&conn.close()}catch(e){}
+  view("home");$("joinErr").textContent=msg;
+}
+$("leave").onclick=()=>{endPlayer("")};
 
 function renderPlayer(){
   const s=P.host,b=$("pBtn"),st=$("pStatus"),note=$("pNote");
   b.className="big";b.disabled=true;note.textContent="";
-  if(!s){st.textContent="Waiting for the host";b.textContent="Wait";return}
-  if(s.on===false){st.textContent="The host screen disconnected";b.textContent="Wait";note.textContent="The game continues when the host is back.";return}
+  if(!P.conn){st.textContent="Lost the big screen";b.textContent="Wait";note.textContent="Trying to reconnect. Keep this page open.";return}
+  if(!s){st.textContent="Joining the room…";b.textContent="Wait";return}
   const pl=Array.isArray(s.pl)?s.pl:[];
-  const myI=pl.findIndex(x=>x.id===uid);
+  const myI=pl.findIndex(x=>x.id===pid);
   const me=pl[myI],cur=pl[s.i];
   const pending=P.pendingSeq===s.seq&&Date.now()-P.pendingAt<2000;
   if(s.ph==="lobby"){
@@ -623,7 +674,7 @@ function renderPlayer(){
   if(myI<0){st.textContent="Game in progress";b.textContent="Watch";note.textContent="You'll join when the host goes back to setup.";return}
   if(s.ph==="roundover"||s.ph==="gameover"){
     const lo=pl[s.lo];
-    if(s.ph==="gameover"){const w=pl[s.w];st.textContent=w&&w.id===uid?"You win!":`${w?w.n:"Someone"} wins`;b.textContent=w&&w.id===uid?"Winner":"Game over"}
+    if(s.ph==="gameover"){const w=pl[s.w];st.textContent=w&&w.id===pid?"You win!":`${w?w.n:"Someone"} wins`;b.textContent=w&&w.id===pid?"Winner":"Game over"}
     else if(s.lo===myI){st.textContent=me.o?"Caught at zero. You're out.":"Caught at zero! You start next round.";b.textContent="Lost"}
     else{st.textContent=`${lo?lo.n:"Someone"} was caught at zero`;b.textContent=me.o?"Out":"Phew"}
     const rk="res-"+s.r+"-"+s.lo;if(P.lastResultKey!==rk){P.lastResultKey=rk;sfx("timeup");vibrate(s.lo===myI?[300,100,300]:0)}
@@ -645,11 +696,12 @@ function renderPlayer(){
   else{st.textContent="The clock is running";b.textContent="Hold…";b.classList.add("locked");note.textContent="Stop unlocks in a moment"}
 }
 $("pBtn").onclick=()=>{
-  const s=P.host;if(!s||!P.code)return;
+  const s=P.host;if(!s||!P.conn)return;
   if(s.ph==="running"&&!s.cs){sfx("locked");const b=$("pBtn");b.classList.remove("shake");void b.offsetWidth;b.classList.add("shake");return}
   sfx(s.ph==="ready"?"start":"stop");
-  P.press++;P.pendingSeq=s.seq;P.pendingAt=Date.now();
-  update(rp(P.code,"players",uid),{press:P.press}).catch(()=>{});
+  P.press++;store.set("lss-press-"+P.code,String(P.press));
+  P.pendingSeq=s.seq;P.pendingAt=Date.now();
+  try{P.conn.send({t:"press",n:P.press})}catch(e){}
   $("pBtn").disabled=true;setTimeout(renderPlayer,2100);
 };
 function vibrate(p){try{if(p&&navigator.vibrate)navigator.vibrate(p)}catch(e){}}
@@ -674,9 +726,9 @@ function sfx(kind){
 }
 document.addEventListener("click",e=>{const b=e.target.closest("button");if(b&&!b.disabled&&b.id!=="hostPress"&&b.id!=="pBtn")sfx("tap")});
 
+if(!peerOk)$("hostErr").textContent="The connection library did not load. Check your internet connection and reload.";
 checkResume();
-// test hook (harmless in production): lets automated checks read state
-window.__lss={G,P,get uid(){return uid}};
+window.__lss={G,P,get pid(){return pid}}; // read-only hook for automated checks
 </script>
 </body>
 </html>
