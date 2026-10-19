@@ -145,7 +145,6 @@ body.timeup .big,body.timeup .big:disabled{--c:var(--idle);background:var(--idle
 @media (prefers-reduced-motion:reduce){.shake,.big.go{animation:none}.big{transition:none}body.timeup{transition:none}}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body>
 
@@ -169,7 +168,7 @@ body.timeup .big,body.timeup .big:disabled{--c:var(--idle);background:var(--idle
     <section class="panel">
       <span class="label">Big screen</span>
       <h2>Host a game</h2>
-      <p class="hint">Set up the room on a laptop or TV. After you start, this screen becomes the countdown display. Keep this page open while you play: it runs the game.</p>
+      <p class="hint">Set up the room on a laptop or TV. After you start, this screen becomes the countdown display.</p>
       <p class="err" id="hostErr"></p>
       <button class="primary cta" id="goHost">Create a room</button>
       <button id="resumeHost" hidden>Resume room</button>
@@ -190,7 +189,6 @@ body.timeup .big,body.timeup .big:disabled{--c:var(--idle);background:var(--idle
       <span class="label" style="margin-top:6px">Game PIN</span>
       <span class="code" id="aCode">····</span>
       <span class="conn" id="hConn"></span>
-      <span class="conn" id="hRelay"></span>
     </div>
     <img class="qr" id="aQr" alt="QR code that opens the join page with this PIN filled in" hidden>
   </section>
@@ -283,483 +281,354 @@ const fmt=ms=>{ms=Math.max(0,ms);const s=ms/1000,m=Math.floor(s/60);return m+":"
 const TIMES=[30,60,90,120], HOLDS=[0,1,2,3];
 const VIEWS=["home","admin","show","player"];
 function setTimeUp(on){document.body.classList.toggle("timeup",!!on)}
-function view(id){if(id==="home"||id==="admin")setTimeUp(false);VIEWS.forEach(v=>$(v).hidden=v!==id);window.scrollTo(0,0);keepAwake(id!=="home")}
+function view(id){if(id==="home"||id==="admin")setTimeUp(false);if(!$(id).hidden&&VIEWS.every(v=>v===id||$(v).hidden))return;VIEWS.forEach(v=>$(v).hidden=v!==id);window.scrollTo(0,0);keepAwake(id!=="home")}
 const store={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
 const joinBase=location.origin+location.pathname;
 const prettyUrl=joinBase.replace(/^https?:\/\//,"").replace(/index\.html$/,"").replace(/\/$/,"");
-const PREFIX="last-second-standing-v1-";   // keeps our room IDs apart from other apps on the shared PeerJS service
-const peerOk=typeof window.Peer==="function";
-
-/* ---------- connection servers ----------
-   STUN helps phones find a direct route to the big screen. When a network blocks direct
-   routes (eduroam, school, office, guest Wi-Fi), a relay (TURN) server on port 443 carries
-   the messages instead. Relay passwords live in Vercel environment variables and are handed
-   out by /api/ice (see README), so nothing secret is written into this page. */
-const STUN=[{urls:["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]},{urls:"stun:stun.cloudflare.com:3478"}];
-// PeerJS's own free relay servers (no signup, port 3478 only). Last-resort fallback.
-const PEERJS_DEFAULT=(()=>{try{const d=window.peerjs&&peerjs.util&&peerjs.util.defaultConfig;if(d&&Array.isArray(d.iceServers)){const t=d.iceServers.filter(s=>JSON.stringify(s).includes("turn:"));if(t.length)return t}}catch(e){}
-  return [{urls:["turn:eu-0.turn.peerjs.com:3478","turn:us-0.turn.peerjs.com:3478"],username:"peerjs",credential:"peerjsp"}]})();
-let relayOn=false,relayProvider="";
-const iceReady=(async()=>{
-  let own=[];
-  try{
-    const ctl=new AbortController();const t=setTimeout(()=>ctl.abort(),5000);
-    const r=await fetch("/api/ice",{signal:ctl.signal,cache:"no-store"});clearTimeout(t);
-    if(r.ok){const j=await r.json();if(j&&j.relay&&Array.isArray(j.iceServers)){own=j.iceServers;relayOn=true;relayProvider=String(j.provider||"")}}
-  }catch(e){/* no relay function (e.g. running locally): use the built-in servers */}
-  return relayOn?[...own,...PEERJS_DEFAULT]:[...STUN,...PEERJS_DEFAULT];
-})();
-async function peerOpts(){return {debug:0,config:{iceServers:await iceReady}}}
 function rid(n){const a="abcdefghijkmnpqrstuvwxyz23456789";let s="";for(let i=0;i<n;i++)s+=a[Math.floor(Math.random()*a.length)];return s}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 
 /* keep screens awake during a game (ignored where not supported) */
 let wake=null;
 async function keepAwake(on){try{if(on&&!wake&&navigator.wakeLock){wake=await navigator.wakeLock.request("screen");wake.addEventListener("release",()=>wake=null)}else if(!on&&wake){wake.release();wake=null}}catch(e){}}
-document.addEventListener("visibilitychange",()=>{if(!document.hidden&&!$("home").hidden)keepAwake(true)});
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&$("home").hidden)keepAwake(true)});
+
+/* ---------- talking to the game server ----------
+   The server owns the game and times every press with its own clock. Each reply carries the
+   server's time, which keeps this device's countdown display in step with it. */
+const API="/api/game";
+let clockOffset=0,bestRtt=Infinity;
+const serverNow=()=>Date.now()+clockOffset;
+async function api(method,data){
+  const t0=Date.now();
+  let r,j={};
+  try{
+    const ctl=new AbortController();const timer=setTimeout(()=>ctl.abort(),8000);
+    r=method==="GET"
+      ?await fetch(API+"?"+new URLSearchParams(data),{cache:"no-store",signal:ctl.signal})
+      :await fetch(API,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(data),signal:ctl.signal});
+    clearTimeout(timer);
+    j=await r.json().catch(()=>({}));
+  }catch(e){return {ok:false,status:0,body:{error:"network"}}}
+  const t1=Date.now();
+  if(typeof j.now==="number"){
+    const rtt=t1-t0;
+    if(rtt<=bestRtt*1.25){clockOffset=j.now-(t0+t1)/2;bestRtt=Math.max(rtt,1)}
+    bestRtt*=1.01; // let a newer, slightly slower sample win now and then
+  }
+  return {ok:r.ok,status:r.status,body:j};
+}
+function serverProblem(body){
+  if(body&&body.error==="not_configured")return "The game server isn't connected to its storage yet. The site owner needs to add the Upstash settings in Vercel (see the README).";
+  if(body&&body.error==="network")return "Can't reach the game server. Check your internet connection and try again.";
+  return "Something went wrong on the game server. Try again in a moment.";
+}
 
 /* ============================== HOST ============================== */
-const G={phase:"lobby",total:60,rule:"starter",minHold:1,blind:false,players:[],idx:0,running:false,
-  remaining:60000,remStart:0,turnStart:0,round:0,log:[],loser:-1,winner:-1,nextStarter:0,seq:0,raf:0,canStop:false,holdTimer:0,tag:"",msg:""};
-let code="", hostPeer=null, roster={}, lastPress={}, kicked=new Set(), localId=0;
-
-function openHostPeer(c){
-  return new Promise(async(res,rej)=>{
-    const p=new Peer(PREFIX+c,await peerOpts());
-    const fail=e=>{p.off("open");try{p.destroy()}catch(_){}rej(e)};
-    p.once("open",()=>{p.off("error",fail);res(p)});
-    p.once("error",fail);
-  });
-}
-async function claimRoom(c,tries){
-  let last;
-  for(let t=0;t<tries;t++){
-    try{return await openHostPeer(c)}catch(e){last=e;if(e&&e.type==="unavailable-id"){await new Promise(r=>setTimeout(r,1500));continue}throw e}
-  }
-  throw last;
-}
+const H={code:"",key:"",st:null,seen:{},timer:0,lastSeenAt:0,fails:0,raf:0,prev:null};
 
 async function createRoom(){
-  $("hostErr").textContent="";
-  if(!peerOk){$("hostErr").textContent="The connection library did not load. Check your internet connection and reload.";return}
-  $("goHost").disabled=true;$("goHost").textContent="Creating…";
-  try{
-    let p=null,c="";
-    for(let t=0;t<6&&!p;t++){
-      c=rid(4);
-      try{p=await openHostPeer(c)}catch(e){if(!(e&&e.type==="unavailable-id"))throw e}
-    }
-    if(!p)throw new Error("no code");
-    Object.assign(G,{phase:"lobby",players:[],round:0,winner:-1,loser:-1,log:[]});
-    roster={};lastPress={};kicked=new Set();
-    attachHost(c,p);view("admin");renderSetup();publish();
-  }catch(e){
-    $("hostErr").textContent="Could not create a room. Check your internet connection and try again.";
-  }
+  $("hostErr").textContent="";$("goHost").disabled=true;$("goHost").textContent="Creating…";
+  const r=await api("POST",{op:"create"});
   $("goHost").disabled=false;$("goHost").textContent="Create a room";
+  if(!r.ok){$("hostErr").textContent=serverProblem(r.body);return}
+  attachHost(r.body.code,r.body.hostKey,r.body.state);
 }
-
-function attachHost(c,p){
-  code=c;hostPeer=p;
-  const CODE=c.toUpperCase();
-  $("aCode").textContent=CODE;$("sCode").textContent=CODE;
+function attachHost(code,key,st){
+  H.code=code;H.key=key;H.st=null;H.prev=null;H.seen={};H.lastSeenAt=0;
+  store.set("lss-host",JSON.stringify({code,key}));
+  $("aCode").textContent=code;$("sCode").textContent=code;
   $("aUrl").textContent=prettyUrl;$("sUrl").textContent=prettyUrl;
-  try{if(window.qrcode){const qr=qrcode(0,"M");qr.addData(joinBase+"?pin="+CODE);qr.make();$("aQr").src=qr.createDataURL(5,2);$("aQr").hidden=false}}catch(e){$("aQr").hidden=true}
-  p.on("connection",conn=>{
-    conn.on("data",d=>onHostMsg(conn,d));
-    conn.on("close",()=>onHostClose(conn));
-    conn.on("error",()=>onHostClose(conn));
-  });
-  // lost the matchmaking server: open games keep working, but new players can't join until it comes back
-  p.on("disconnected",()=>{setHostConn(false);setTimeout(()=>{try{if(hostPeer===p&&!p.destroyed)p.reconnect()}catch(e){}},1500)});
-  p.on("open",()=>setHostConn(true));
-  p.on("error",e=>{if(e&&e.type==="network")setHostConn(false)});
-  setHostConn(true);
-  iceReady.then(()=>{const el=$("hRelay");el.textContent=relayOn?"Relay server on: phones on any network can join.":"Relay server off: phones on university, school or guest Wi-Fi may not be able to join. See the README.";el.classList.toggle("bad",!relayOn)});
+  try{if(window.qrcode){const qr=qrcode(0,"M");qr.addData(joinBase+"?pin="+code);qr.make();$("aQr").src=qr.createDataURL(5,2);$("aQr").hidden=false}}catch(e){$("aQr").hidden=true}
+  applyHost(st);hostPollSoon(0);
 }
-function setHostConn(ok){const el=$("hConn");if(el){el.textContent=ok?"":"Reconnecting to the join service… players already in the game are not affected.";el.classList.toggle("bad",!ok)}}
+function detachHost(){clearTimeout(H.timer);cancelAnimationFrame(H.raf);H.code="";H.key="";H.st=null;store.del("lss-host")}
 
-function onHostMsg(conn,d){
-  if(!d||typeof d!=="object")return;
-  if(d.t==="hello"){
-    const pid=String(d.pid||"").slice(0,40);if(!pid)return;
-    if(kicked.has(pid)){try{conn.send({t:"kicked"})}catch(e){}setTimeout(()=>conn.close(),300);return}
-    const name=String(d.name||"Player").trim().slice(0,20)||"Player";
-    const press=Number(d.press)||0;
-    const old=roster[pid];
-    if(old&&old.conn&&old.conn!==conn){try{old.conn.close()}catch(e){}}
-    conn.__pid=pid;
-    roster[pid]={name,online:true,conn};
-    lastPress[pid]=Math.max(lastPress[pid]??press,press);
-    if(G.phase==="lobby"&&!G.players.some(x=>x.id===pid)){
-      let n=name,k=2;while(G.players.some(x=>x.n.toLowerCase()===n.toLowerCase()))n=name+" "+(k++);
-      G.players.push({id:pid,n,out:false,l:0,phone:true});
-    }
-    publish();refreshHost();detectRoute(pid,conn);return;
+function hostPollSoon(ms){clearTimeout(H.timer);H.timer=setTimeout(hostPoll,ms)}
+async function hostPoll(){
+  if(!H.code)return;
+  const wantSeen=Date.now()-H.lastSeenAt>3000;
+  const r=await api("GET",wantSeen?{code:H.code,seen:1}:{code:H.code});
+  if(!H.code)return;
+  if(r.ok){H.fails=0;setHostConn(true);if(r.body.seen){H.seen=r.body.seen;H.lastSeenAt=Date.now()}applyHost(r.body.state)}
+  else if(r.status===404){$("hostErr").textContent="This room has expired. Create a new one.";detachHost();checkResume();view("home");return}
+  else{H.fails++;if(H.fails>=2)setHostConn(false)}
+  hostPollSoon(hostInterval());
+}
+function hostInterval(){
+  const st=H.st;if(!st)return 1000;
+  if(st.phase==="running"){
+    const left=st.run.since+st.run.remStart-serverNow();
+    return Math.max(60,Math.min(400,left+60));  // check right after the clock should hit zero
   }
-  if(d.t==="press"){
-    const pid=conn.__pid;if(!pid)return;
-    const n=Number(d.n)||0;
-    if(n<=lastPress[pid])return;
-    lastPress[pid]=n;
-    const pl=G.players.find(x=>x.id===pid);
-    if(pl&&G.players[G.idx]===pl&&(G.phase==="ready"||G.phase==="running"))doPress();
-    else sendState(conn);
+  return st.phase==="ready"?400:1000;
+}
+function setHostConn(ok){const el=$("hConn");el.textContent=ok?"":"Reconnecting to the game server…";el.classList.toggle("bad",!ok)}
+
+async function hostCmd(op,extra){
+  const r=await api("POST",{op,code:H.code,hostKey:H.key,...extra});
+  if(r.body&&r.body.state)applyHost(r.body.state);
+  return r;
+}
+
+/* apply a state from the server: newer versions only */
+function applyHost(st){
+  if(!st||!H.code)return;
+  if(H.st&&st.v<H.st.v)return;
+  const prev=H.st;H.st=st;
+  if(st.phase==="closed"){detachHost();view("home");return}
+  // sounds for what just happened
+  if(prev&&prev.v!==st.v){
+    if(prev.phase==="ready"&&st.phase==="running")sfx("start");
+    else if(prev.phase==="running"&&st.phase==="ready")sfx("stop");
+    else if((st.phase==="roundover"||st.phase==="gameover")&&prev.phase!==st.phase)sfx("timeup");
   }
-}
-/* find out whether a phone is connected directly or through the relay (shown on the setup list) */
-async function detectRoute(pid,conn){
-  await new Promise(r=>setTimeout(r,1500));
-  const pc=conn.peerConnection;if(!pc||!pc.getStats)return;
-  try{
-    const st=await pc.getStats(),by={};let pair=null;
-    st.forEach(x=>{by[x.id]=x});
-    st.forEach(x=>{if(x.type==="transport"&&x.selectedCandidatePairId)pair=by[x.selectedCandidatePairId]});
-    if(!pair)st.forEach(x=>{if(x.type==="candidate-pair"&&x.state==="succeeded"&&(x.selected||x.nominated))pair=x});
-    if(!pair)return;
-    const l=by[pair.localCandidateId],r=by[pair.remoteCandidateId];
-    const relay=(l&&l.candidateType==="relay")||(r&&r.candidateType==="relay");
-    if(roster[pid]&&roster[pid].conn===conn){roster[pid].via=relay?"relay":"direct";refreshHost()}
-  }catch(e){}
-}
-function onHostClose(conn){
-  const pid=conn.__pid;if(!pid||!roster[pid]||roster[pid].conn!==conn)return;
-  roster[pid].online=false;roster[pid].conn=null;
-  if(G.phase==="lobby"){G.players=G.players.filter(x=>x.id!==pid);publish()}
-  refreshHost();
-}
-function refreshHost(){if(!$("admin").hidden)renderSetup();if(!$("show").hidden&&!$("stage").hidden)renderShow()}
-
-function stateObj(){
-  return {ph:G.phase,r:G.round,rule:G.rule,i:G.idx,cs:G.canStop?1:0,lo:G.loser,w:G.winner,seq:G.seq,t:G.log.length,on:true,
-    pl:G.players.map(x=>({id:x.id,n:x.n,o:x.out?1:0,l:x.l}))};
-}
-function sendState(conn){try{if(conn&&conn.open)conn.send({t:"state",s:stateObj()})}catch(e){}}
-function publish(){
-  if(!code)return;G.seq++;
-  const msg={t:"state",s:stateObj()};
-  for(const r of Object.values(roster)){if(r.online&&r.conn&&r.conn.open){try{r.conn.send(msg)}catch(e){}}}
-  saveHostSnap();
-}
-function saveHostSnap(){
-  store.set("lss-host",JSON.stringify({code,at:Date.now(),G:{phase:G.phase,total:G.total,rule:G.rule,minHold:G.minHold,blind:G.blind,round:G.round,idx:G.idx,
-    remaining:Math.round(G.running?G.remStart:G.remaining),loser:G.loser,winner:G.winner,nextStarter:G.nextStarter,tag:G.tag,msg:G.msg,
-    players:G.players.map(p=>({id:p.id,n:p.n,out:p.out,l:p.l,phone:p.phone}))}}));
+  if(st.phase==="lobby"){view("admin");renderSetup()}
+  else{view("show");renderShow()}
 }
 
+const online=p=>p.phone&&H.seen[p.id]&&serverNow()-H.seen[p.id]<15000;
 function renderSetup(){
-  $("plist").innerHTML=G.players.length?G.players.map((p,i)=>{
-    const on=p.phone&&roster[p.id]&&roster[p.id].online;
-    return `<li><span class="num">${i+1}</span><span class="nm">${esc(p.n)}</span>
-    ${p.phone?`<span class="dev ${on?"on":""}" title="${on&&roster[p.id].via==="relay"?"Connected through the relay server":on?"Connected directly":""}">${on?(roster[p.id].via==="relay"?"Phone · relay":roster[p.id].via==="direct"?"Phone · direct":"Phone"):"Offline"}</span>`:`<span class="dev">Host presses</span>`}
-    <button class="icon-btn" data-up="${i}" aria-label="Move ${esc(p.n)} up" ${i?"":"disabled"}>↑</button>
-    <button class="icon-btn" data-del="${i}" aria-label="Remove ${esc(p.n)}">✕</button></li>`}).join("")
+  const st=H.st;if(!st)return;
+  $("plist").innerHTML=st.players.length?st.players.map((p,i)=>`<li><span class="num">${i+1}</span><span class="nm">${esc(p.n)}</span>
+    ${p.phone?`<span class="dev ${online(p)?"on":""}">${online(p)?"Phone":"Offline"}</span>`:`<span class="dev">Host presses</span>`}
+    <button class="icon-btn" data-up="${esc(p.id)}" aria-label="Move ${esc(p.n)} up" ${i?"":"disabled"}>↑</button>
+    <button class="icon-btn" data-del="${esc(p.id)}" aria-label="Remove ${esc(p.n)}">✕</button></li>`).join("")
     :`<li class="empty">No players yet. Players go to ${esc(prettyUrl)} and enter the PIN, or scan the QR code.</li>`;
-  $("timeSeg").innerHTML=TIMES.map(t=>`<button type="button" data-t="${t}" aria-pressed="${G.total===t}">${t}s</button>`).join("");
-  $("customTime").value=G.total;
-  $("holdSeg").innerHTML=HOLDS.map(h=>`<button type="button" data-h="${h}" aria-pressed="${G.minHold===h}">${h?h+"s":"None"}</button>`).join("");
-  document.querySelectorAll("#ruleSeg button").forEach(b=>b.setAttribute("aria-pressed",b.dataset.rule===G.rule));
-  $("blind").checked=G.blind;
+  const s=st.settings;
+  $("timeSeg").innerHTML=TIMES.map(t=>`<button type="button" data-t="${t}" aria-pressed="${s.total===t}">${t}s</button>`).join("");
+  if(document.activeElement!==$("customTime"))$("customTime").value=s.total;
+  $("holdSeg").innerHTML=HOLDS.map(h=>`<button type="button" data-h="${h}" aria-pressed="${s.minHold===h}">${h?h+"s":"None"}</button>`).join("");
+  document.querySelectorAll("#ruleSeg button").forEach(b=>b.setAttribute("aria-pressed",b.dataset.rule===s.rule));
+  $("blind").checked=!!s.blind;
 }
 $("plist").onclick=e=>{
   const b=e.target.closest("button");if(!b)return;
-  if(b.dataset.del!=null){
-    const [x]=G.players.splice(+b.dataset.del,1);
-    if(x&&x.phone){kicked.add(x.id);const r=roster[x.id];if(r&&r.conn){try{r.conn.send({t:"kicked"})}catch(e){}const c=r.conn;setTimeout(()=>{try{c.close()}catch(e){}},300)}delete roster[x.id]}
-  }
-  if(b.dataset.up!=null){const i=+b.dataset.up;[G.players[i-1],G.players[i]]=[G.players[i],G.players[i-1]]}
-  renderSetup();publish();
+  if(b.dataset.del)hostCmd("remove",{id:b.dataset.del});
+  if(b.dataset.up)hostCmd("up",{id:b.dataset.up});
 };
-$("addForm").onsubmit=e=>{e.preventDefault();const n=$("newName").value.trim().slice(0,20);if(!n)return;
-  if(G.players.some(p=>p.n.toLowerCase()===n.toLowerCase())){$("setupErr").textContent=`${n} is already in the list. Use a different name.`;return}
-  G.players.push({id:"local-"+(++localId)+"-"+Date.now().toString(36),n,out:false,l:0,phone:false});
-  $("newName").value="";$("setupErr").textContent="";renderSetup();publish();$("newName").focus()};
-$("timeSeg").onclick=e=>{const b=e.target.closest("button");if(b){G.total=+b.dataset.t;renderSetup();saveHostSnap()}};
-$("customTime").onchange=e=>{const v=Math.round(+e.target.value);if(v>=5&&v<=600)G.total=v;renderSetup();saveHostSnap()};
-$("holdSeg").onclick=e=>{const b=e.target.closest("button");if(b){G.minHold=+b.dataset.h;renderSetup();saveHostSnap()}};
-$("ruleSeg").onclick=e=>{const b=e.target.closest("button");if(b){G.rule=b.dataset.rule;renderSetup();saveHostSnap()}};
-$("blind").onchange=e=>{G.blind=e.target.checked;saveHostSnap()};
+$("addForm").onsubmit=async e=>{e.preventDefault();const n=$("newName").value.trim().slice(0,20);if(!n)return;
+  const r=await hostCmd("add",{name:n});
+  if(r.ok){$("newName").value="";$("setupErr").textContent="";$("newName").focus()}
+  else $("setupErr").textContent=r.body&&r.body.error==="name_taken"?`${n} is already in the list. Use a different name.`:serverProblem(r.body)};
+const setSetting=patch=>hostCmd("settings",{settings:patch});
+$("timeSeg").onclick=e=>{const b=e.target.closest("button");if(b)setSetting({total:+b.dataset.t})};
+$("customTime").onchange=e=>{const v=Math.round(+e.target.value);if(v>=5&&v<=600)setSetting({total:v});else renderSetup()};
+$("holdSeg").onclick=e=>{const b=e.target.closest("button");if(b)setSetting({minHold:+b.dataset.h})};
+$("ruleSeg").onclick=e=>{const b=e.target.closest("button");if(b)setSetting({rule:b.dataset.rule})};
+$("blind").onchange=e=>setSetting({blind:e.target.checked});
 $("goHost").onclick=createRoom;
-$("adminBack").onclick=()=>{
-  stopClock();
-  for(const r of Object.values(roster)){if(r.conn){try{r.conn.send({t:"closed"})}catch(e){}}}
-  const p=hostPeer;hostPeer=null;code="";roster={};store.del("lss-host");
-  setTimeout(()=>{try{p&&p.destroy()}catch(e){}},300);
-  checkResume();view("home");
-};
-
-/* resume after the host page refreshes */
-function hostSnap(){try{const s=JSON.parse(store.get("lss-host")||"null");if(s&&s.code&&Date.now()-s.at<6*3600e3)return s}catch(e){}return null}
-function checkResume(){const s=hostSnap();$("resumeHost").hidden=!s;if(s)$("resumeHost").textContent="Resume room "+s.code.toUpperCase()}
-$("resumeHost").onclick=async()=>{
-  const snap=hostSnap();if(!snap||!peerOk)return;
-  $("resumeHost").disabled=true;$("resumeHost").textContent="Reopening room…";$("hostErr").textContent="";
-  try{
-    const p=await claimRoom(snap.code,8);
-    const g=snap.G;
-    Object.assign(G,{total:g.total,rule:g.rule,minHold:g.minHold,blind:g.blind,round:g.round,idx:g.idx,remaining:g.remaining,
-      loser:g.loser,winner:g.winner,nextStarter:g.nextStarter,tag:g.tag,msg:g.msg,log:[],running:false,canStop:false,
-      players:g.players.map(x=>({...x}))});
-    roster={};lastPress={};kicked=new Set();
-    attachHost(snap.code,p);
-    if(g.phase==="lobby"){G.phase="lobby";view("admin");renderSetup()}
-    else if(g.phase==="roundover"||g.phase==="gameover"){G.phase=g.phase;view("show");showResult()}
-    else{G.phase="ready";view("show");$("stage").hidden=false;$("resultPanel").hidden=true;renderShow()}
-    publish();
-  }catch(e){
-    $("hostErr").textContent="Could not reopen that room. Wait a few seconds and try again, or create a new room.";
-  }
-  $("resumeHost").disabled=false;checkResume();
-};
-
-/* ---------- game flow ---------- */
-$("startGame").onclick=()=>{
-  if(G.players.length<2){$("setupErr").textContent="Add at least two players to start.";return}
+$("startGame").onclick=async()=>{
+  if(!H.st||H.st.players.length<2){$("setupErr").textContent="Add at least two players to start.";return}
   $("setupErr").textContent="";
-  G.players.forEach(p=>{p.out=false;p.l=0});G.round=0;G.winner=-1;
-  startRound(0);
+  const r=await hostCmd("start");
+  if(!r.ok&&r.body.error!=="in_game")$("setupErr").textContent=serverProblem(r.body);
 };
-function alive(){return G.players.filter(p=>!p.out).length}
-function nextAlive(i){const n=G.players.length;for(let k=1;k<=n;k++){const j=(i+k)%n;if(!G.players[j].out)return j}return i}
-function startRound(starter){
-  G.round++;G.remaining=G.total*1000;G.idx=starter;G.running=false;G.canStop=false;G.log=[];G.loser=-1;G.phase="ready";G.tag="";G.msg="";
-  setTimeUp(false);view("show");$("stage").hidden=false;$("resultPanel").hidden=true;renderShow();publish();
-}
-function stopClock(){cancelAnimationFrame(G.raf);clearTimeout(G.holdTimer);G.running=false}
+$("adminBack").onclick=async()=>{const code=H.code,key=H.key;detachHost();view("home");checkResume();api("POST",{op:"close",code,hostKey:key})};
+$("nextRound").onclick=()=>hostCmd("next");
+$("backSetup").onclick=()=>hostCmd("setup");
+$("quit").onclick=()=>hostCmd("setup");
 
-function doPress(){
-  if(G.phase!=="ready"&&G.phase!=="running")return;
-  const now=performance.now();
-  if(!G.running){
-    sfx("start");
-    G.running=true;G.phase="running";G.turnStart=now;G.remStart=G.remaining;G.canStop=G.minHold===0;
-    if(!G.canStop)G.holdTimer=setTimeout(()=>{G.canStop=true;publish();renderShow()},G.minHold*1000);
-    publish();renderShow();G.raf=requestAnimationFrame(tick);return;
-  }
-  const held=now-G.turnStart;
-  if(held<G.minHold*1000){sfx("locked");const b=$("hostPress");b.classList.remove("shake");void b.offsetWidth;b.classList.add("shake");return}
-  stopClock();
-  G.remaining=G.remStart-held;
-  if(G.remaining<=0){G.remaining=0;timeUp();return}
-  sfx("stop");
-  G.log.push({n:G.players[G.idx].n,ms:held});
-  G.phase="ready";G.canStop=false;G.idx=nextAlive(G.idx);
-  publish();renderShow();
+/* host presses for players without a phone (or for anyone) */
+let hostPressing=false;
+async function hostPress(){
+  const st=H.st;if(!st||hostPressing||(st.phase!=="ready"&&st.phase!=="running"))return;
+  if(st.phase==="running"&&serverNow()-st.run.since<st.settings.minHold*1000){sfx("locked");shake($("hostPress"));return}
+  hostPressing=true;
+  const r=await hostCmd("press",{expect:st.phase});
+  hostPressing=false;
+  if(!r.ok&&r.body.error==="locked"){sfx("locked");shake($("hostPress"))}
 }
-function tick(){
-  if(!G.running)return;
-  G.remaining=G.remStart-(performance.now()-G.turnStart);
-  if(G.remaining<=0){G.remaining=0;stopClock();timeUp();return}
-  drawClock();G.raf=requestAnimationFrame(tick);
-}
-// background tabs pause animation frames, so check the clock on a timer as well
-setInterval(()=>{if(G.running&&document.hidden){G.remaining=G.remStart-(performance.now()-G.turnStart);if(G.remaining<=0){G.remaining=0;stopClock();timeUp()}}},250);
-
-function drawClock(){
-  const masked=G.blind&&G.running;
-  $("clock").textContent=masked?"?:??.?":fmt(G.remaining);
-  $("clock").classList.toggle("masked",masked);
-  const frac=G.remaining/(G.total*1000),low=frac<.2;
-  $("clock").classList.toggle("low",low&&!masked);
-  if(!masked){$("bar").style.width=frac*100+"%";$("bar").classList.toggle("low",low)}
-}
-function renderShow(){
-  if(G.phase==="lobby")return;
-  const cur=G.players[G.idx];
-  $("roundLbl").textContent=`Round ${G.round} · ${alive()} players · ${G.total}s on the clock`;
-  $("who").textContent=cur?cur.n:"";
-  drawClock();
-  const st=$("state");
-  if(G.running){st.textContent=G.canStop?"Clock running":"Clock running · Stop locked";st.className="state run"}
-  else{st.textContent=cur&&cur.phone?`Waiting for ${cur.n} to press Start`:"Waiting to start";st.className="state"}
-  $("queue").innerHTML=G.players.map((q,i)=>{const off=q.phone&&!(roster[q.id]&&roster[q.id].online);
-    return `<span class="chip ${i===G.idx&&(G.phase==="ready"||G.phase==="running")?"now":""} ${q.out?"out":""} ${off?"off":""}" title="${off?"Phone offline":""}">${esc(q.n)}${q.l&&G.rule==="starter"?`<span class="l">×${q.l}</span>`:""}</span>`}).join("");
-  $("hostPress").textContent=cur?(G.running?`Stop for ${cur.n}`:`Start for ${cur.n}`):"Press for player";
-  $("log").innerHTML=G.log.length?G.log.map(l=>`<li class="${l.lose?"lose":""}"><span>${esc(l.n)}</span><span>${l.lose?"caught at 0":"held "+(l.ms/1000).toFixed(2)+"s"}</span></li>`).reverse().join("")
-    :`<li><span style="color:var(--muted)">No turns yet. ${esc(cur?cur.n:"")} starts.</span><span></span></li>`;
-}
-$("hostPress").onclick=doPress;
+$("hostPress").onclick=hostPress;
 document.addEventListener("keydown",e=>{
-  if(e.code==="Space"&&!$("show").hidden&&!$("stage").hidden&&!/INPUT|BUTTON/.test(document.activeElement.tagName)){e.preventDefault();doPress()}
+  if(e.code==="Space"&&!$("show").hidden&&!$("stage").hidden&&!/INPUT|BUTTON/.test(document.activeElement.tagName)){e.preventDefault();hostPress()}
 });
+function shake(b){b.classList.remove("shake");void b.offsetWidth;b.classList.add("shake")}
 
-function timeUp(){
-  stopClock();
-  const loser=G.players[G.idx];loser.l++;G.loser=G.idx;
-  G.log.push({n:loser.n,lose:true});sfx("timeup");
-  if(G.rule==="eliminate"){
-    loser.out=true;
-    if(alive()===1){
-      const w=G.players.findIndex(p=>!p.out);G.winner=w;G.phase="gameover";G.tag=G.players[w].n+" wins";
-      G.msg=`${loser.n} was holding the clock at zero and is out. ${G.players[w].n} is the last one standing.`;
-    }else{
-      G.nextStarter=nextAlive(G.idx);G.phase="roundover";G.tag="Time up";
-      G.msg=`${loser.n} was holding the clock at zero and is eliminated. ${alive()} players remain. ${G.players[G.nextStarter].n} starts the next round.`;
-    }
-  }else{
-    G.nextStarter=G.idx;G.phase="roundover";G.tag="Time up";
-    G.msg=`${loser.n} was holding the clock at zero, so ${loser.n} starts the next round.`;
+/* ---------- show screen ---------- */
+const aliveCount=st=>st.players.filter(p=>!p.out).length;
+function remainingNow(st){return st.phase==="running"&&st.run?Math.max(0,st.run.remStart-(serverNow()-st.run.since)):st.remaining}
+function drawClock(){
+  const st=H.st;if(!st)return;
+  const running=st.phase==="running";
+  const masked=st.settings.blind&&running;
+  const rem=remainingNow(st);
+  $("clock").textContent=masked?"?:??.?":fmt(rem);
+  $("clock").classList.toggle("masked",masked);
+  const frac=rem/(st.settings.total*1000),low=frac<.2;
+  $("clock").classList.toggle("low",low&&!masked);
+  if(!masked){$("bar").style.width=Math.max(0,Math.min(1,frac))*100+"%";$("bar").classList.toggle("low",low)}
+  if(running){
+    const canStop=serverNow()-st.run.since>=st.settings.minHold*1000;
+    const s=$("state");s.textContent=canStop?"Clock running":"Clock running · Stop locked";s.className="state run";
   }
-  renderShow();showResult();publish();
 }
-function showResult(){
-  $("rTag").textContent=G.tag;$("rTag").classList.toggle("win",G.phase==="gameover");$("rMsg").textContent=G.msg;
-  $("nextRound").textContent=G.phase==="gameover"?"Play again":"Next round";
-  $("rTable").innerHTML=G.players.map((p,i)=>`<tr><td>${esc(p.n)}</td><td>${p.out?(i===G.loser?"Eliminated":"Out"):(i===G.loser?"Lost this round":(i===G.winner?"Winner":"In"))}</td><td>${p.l}</td></tr>`).join("");
-  $("stage").hidden=true;$("resultPanel").hidden=false;setTimeUp(true);
+function clockLoop(){cancelAnimationFrame(H.raf);const f=()=>{drawClock();if(H.st&&H.st.phase==="running")H.raf=requestAnimationFrame(f)};f()}
+function renderShow(){
+  const st=H.st;if(!st)return;
+  const over=st.phase==="roundover"||st.phase==="gameover";
+  $("stage").hidden=over;$("resultPanel").hidden=!over;setTimeUp(over);
+  const cur=st.players[st.idx];
+  $("roundLbl").textContent=`Round ${st.round} · ${aliveCount(st)} players · ${st.settings.total}s on the clock`;
+  $("who").textContent=cur?cur.n:"";
+  const s=$("state");
+  if(st.phase!=="running"){s.textContent=cur&&cur.phone?`Waiting for ${cur.n} to press Start`:"Waiting to start";s.className="state"}
+  clockLoop();
+  $("queue").innerHTML=st.players.map((q,i)=>{const off=q.phone&&!online(q);
+    return `<span class="chip ${i===st.idx&&!over?"now":""} ${q.out?"out":""} ${off?"off":""}" title="${off?"Phone offline":""}">${esc(q.n)}${q.l&&st.settings.rule==="starter"?`<span class="l">×${q.l}</span>`:""}</span>`}).join("");
+  $("hostPress").textContent=cur?(st.phase==="running"?`Stop for ${cur.n}`:`Start for ${cur.n}`):"Press for player";
+  $("log").innerHTML=st.log.length?st.log.map(l=>`<li class="${l.lose?"lose":""}"><span>${esc(l.n)}</span><span>${l.lose?"caught at 0":"held "+(l.ms/1000).toFixed(2)+"s"}</span></li>`).reverse().join("")
+    :`<li><span style="color:var(--muted)">No turns yet. ${esc(cur?cur.n:"")} starts.</span><span></span></li>`;
+  if(over){
+    $("rTag").textContent=st.tag;$("rTag").classList.toggle("win",st.phase==="gameover");$("rMsg").textContent=st.msg;
+    $("nextRound").textContent=st.phase==="gameover"?"Play again":"Next round";
+    $("rTable").innerHTML=st.players.map((p,i)=>`<tr><td>${esc(p.n)}</td><td>${p.out?(i===st.loser?"Eliminated":"Out"):(i===st.loser?"Lost this round":(i===st.winner?"Winner":"In"))}</td><td>${p.l}</td></tr>`).join("");
+  }
 }
-$("nextRound").onclick=()=>{
-  if(G.phase==="gameover"){G.players.forEach(p=>{p.out=false;p.l=0});G.round=0;G.winner=-1;startRound(0);return}
-  startRound(G.nextStarter);
+
+/* resume after the host page refreshes: the server kept everything */
+function hostSaved(){try{const s=JSON.parse(store.get("lss-host")||"null");if(s&&s.code&&s.key)return s}catch(e){}return null}
+async function checkResume(){
+  const s=hostSaved();$("resumeHost").hidden=true;if(!s)return;
+  const r=await api("GET",{code:s.code});
+  if(r.ok&&r.body.state&&r.body.state.phase!=="closed"){$("resumeHost").hidden=false;$("resumeHost").textContent="Resume room "+s.code}
+  else if(r.status===404||(r.body.state&&r.body.state.phase==="closed"))store.del("lss-host");
+}
+$("resumeHost").onclick=async()=>{
+  const s=hostSaved();if(!s)return;
+  const r=await api("GET",{code:s.code});
+  if(r.ok)attachHost(s.code,s.key,r.body.state);
+  else{$("hostErr").textContent=r.status===404?"That room has expired. Create a new one.":serverProblem(r.body);if(r.status===404){store.del("lss-host");$("resumeHost").hidden=true}}
 };
-function toSetup(){
-  stopClock();G.phase="lobby";
-  // drop phone players who left; add anyone connected who joined mid-game
-  G.players=G.players.filter(x=>!x.phone||(roster[x.id]&&roster[x.id].online));
-  for(const [pid,r] of Object.entries(roster)){if(r.online&&!G.players.some(x=>x.id===pid))G.players.push({id:pid,n:r.name,out:false,l:0,phone:true})}
-  publish();view("admin");renderSetup();
-}
-$("backSetup").onclick=toSetup;
-$("quit").onclick=toSetup;
 
 /* ============================== PLAYER ============================== */
-let pid=store.get("lss-pid");if(!pid){pid="p"+rid(12);store.set("lss-pid",pid)}
-const P={name:"",code:"",press:0,host:null,peer:null,conn:null,pendingSeq:-1,pendingAt:0,lastTurnKey:"",lastResultKey:"",retry:0,joined:false};
+let pid=store.get("lss-pid");if(!pid){pid="p"+rid(14);store.set("lss-pid",pid)}
+const P={code:"",name:"",st:null,timer:0,lastTouch:0,fails:0,listed:false,pressing:false,lastTurnKey:"",lastResultKey:"",raf:0};
 (function prefill(){
   const q=new URLSearchParams(location.search).get("pin");
+  const saved=(()=>{try{return JSON.parse(store.get("lss-player")||"null")}catch(e){return null}})();
   if(q&&/^[a-z0-9]{4}$/i.test(q)){$("jCode").value=q.toUpperCase();setTimeout(()=>$("jName").focus(),50)}
+  else if(saved&&saved.code)$("jCode").value=saved.code;
   const n=store.get("lss-name");if(n)$("jName").value=n;
 })();
 
 $("joinForm").onsubmit=async e=>{
   e.preventDefault();
   audio(); // unlock sound on the phone with this tap
-  const c=$("jCode").value.trim().toLowerCase().replace(/[^a-z0-9]/g,"");
+  const c=$("jCode").value.trim().toUpperCase().replace(/[^A-Z0-9]/g,"");
   const n=$("jName").value.trim().slice(0,20);
   if(c.length!==4){$("joinErr").textContent="Enter the 4-character PIN shown on the big screen.";return}
   if(!n){$("joinErr").textContent="Enter a nickname so the others know who is holding the clock.";return}
-  if(!peerOk){$("joinErr").textContent="The connection library did not load. Check your internet connection and reload.";return}
   $("joinErr").textContent="";$("joinBtn").disabled=true;$("joinBtn").textContent="Joining…";
-  store.set("lss-name",n);
-  const savedPress=Number(store.get("lss-press-"+c))||0;
-  P.name=n;P.code=c;P.press=savedPress;P.host=null;P.joined=false;
-  let r=await connectToHost(true);
-  if(r==="ice"){$("joinBtn").textContent="Still connecting…";r=await connectToHost(true)}  // one automatic retry
-  if(r==="ice")$("joinErr").textContent=relayOn
-    ?"Could not connect to the big screen, even through the relay server. Check your internet connection and try again."
-    :"Your phone found the game, but this network blocks direct connections (common on eduroam, school and office Wi-Fi). Ask the host to switch on the relay server (see the README), or connect everyone to one phone's hotspot.";
-  const ok=r===true;
-  resetJoin();
-  if(ok){$("pName").textContent=n;$("pCode").textContent="PIN "+c.toUpperCase();view("player");renderPlayer()}
-};
-function resetJoin(){$("joinBtn").disabled=false;$("joinBtn").textContent="Enter"}
-
-function ensurePeer(){
-  return new Promise(async(res,rej)=>{
-    const opts=await peerOpts();
-    if(P.peer&&!P.peer.destroyed){
-      if(P.peer.open)return res(P.peer);
-      if(P.peer.disconnected){try{P.peer.reconnect()}catch(e){}}
-      P.peer.once("open",()=>res(P.peer));setTimeout(()=>rej(new Error("timeout")),8000);return;
-    }
-    const p=new Peer(opts);P.peer=p;
-    p.once("open",()=>res(p));
-    p.on("error",e=>{if(P.onPeerError)P.onPeerError(e)});
-    p.on("disconnected",()=>{setTimeout(()=>{try{if(!p.destroyed)p.reconnect()}catch(e){}},1500)});
-    setTimeout(()=>rej(new Error("timeout")),8000);
-  });
-}
-
-/* first=true: report problems on the join form; otherwise keep retrying quietly */
-function connectToHost(first){
-  return new Promise(async resolve=>{
-    let done=false;const finish=v=>{if(!done){done=true;P.onPeerError=null;resolve(v)}};
-    try{await ensurePeer()}catch(e){if(first)$("joinErr").textContent="Could not reach the join service. Check your internet connection and try again.";return finish(false)}
-    const c=P.code;
-    P.onPeerError=e=>{
-      if(e&&e.type==="peer-unavailable"){if(first)$("joinErr").textContent="No game with that PIN. Check the big screen and try again.";finish(false)}
-    };
-    const conn=P.peer.connect(PREFIX+c,{reliable:true,metadata:{v:1}});
-    const iceFail=()=>{if(conn.open||done)return;clearTimeout(timer);clearInterval(watch);try{conn.close()}catch(e){}finish("ice")};
-    const timer=setTimeout(iceFail,20000);
-    // notice a blocked connection early instead of waiting for the full timeout
-    const watch=setInterval(()=>{const pc=conn.peerConnection;if(!pc)return;clearInterval(watch);
-      pc.addEventListener("iceconnectionstatechange",()=>{if(pc.iceConnectionState==="failed")iceFail()})},300);
-    conn.on("open",()=>{
-      clearTimeout(timer);clearInterval(watch);
-      if(P.conn&&P.conn!==conn){try{P.conn.close()}catch(e){}}
-      P.conn=conn;P.joined=true;P.retry=0;
-      conn.send({t:"hello",pid,name:P.name,press:P.press});
-      setConn(true);finish(true);
-    });
-    conn.on("data",d=>{
-      if(!d||typeof d!=="object"||conn!==P.conn)return;
-      if(d.t==="state"){P.host=d.s;renderPlayer()}
-      else if(d.t==="kicked"){endPlayer("The host removed you from the game.")}
-      else if(d.t==="closed"){endPlayer("The host closed the room.")}
-    });
-    conn.on("close",()=>{if(conn===P.conn){P.conn=null;setConn(false);scheduleReconnect()}});
-  });
-}
-function scheduleReconnect(){
-  if(!P.code||!P.joined)return;
-  const wait=Math.min(5000,1000+P.retry*1000);P.retry++;
-  setTimeout(async()=>{if(P.code&&!P.conn){const r=await connectToHost(false);if(r!==true)scheduleReconnect()}},wait);
-}
-function setConn(ok){const c=$("pConn");c.textContent=ok?"":"Reconnecting to the big screen…";c.classList.toggle("bad",!ok);if(!ok)renderPlayer()}
-function endPlayer(msg){
-  const conn=P.conn;P.code="";P.joined=false;P.conn=null;P.host=null;
-  try{conn&&conn.close()}catch(e){}
-  view("home");$("joinErr").textContent=msg;
-}
-$("leave").onclick=()=>{endPlayer("")};
-
-function renderPlayer(){
-  const s=P.host,b=$("pBtn"),st=$("pStatus"),note=$("pNote");
-  b.className="big";b.disabled=true;note.textContent="";
-  setTimeUp(!!(P.conn&&s&&(s.ph==="roundover"||s.ph==="gameover")));
-  if(!P.conn){st.textContent="Lost the big screen";b.textContent="Wait";note.textContent="Trying to reconnect. Keep this page open.";return}
-  if(!s){st.textContent="Joining the room…";b.textContent="Wait";return}
-  const pl=Array.isArray(s.pl)?s.pl:[];
-  const myI=pl.findIndex(x=>x.id===pid);
-  const me=pl[myI],cur=pl[s.i];
-  const pending=P.pendingSeq===s.seq&&Date.now()-P.pendingAt<2000;
-  if(s.ph==="lobby"){
-    st.textContent=me?"You're in! Watch the big screen.":"Joining the room…";
-    b.textContent="Ready";note.textContent=me?`${pl.length} players in the room`:"";return;
-  }
-  if(myI<0){st.textContent="Game in progress";b.textContent="Watch";note.textContent="You'll join when the host goes back to setup.";return}
-  if(s.ph==="roundover"||s.ph==="gameover"){
-    const lo=pl[s.lo];
-    if(s.ph==="gameover"){const w=pl[s.w];st.textContent=w&&w.id===pid?"You win!":`${w?w.n:"Someone"} wins`;b.textContent=w&&w.id===pid?"Winner":"Game over"}
-    else if(s.lo===myI){st.textContent=me.o?"Caught at zero. You're out.":"Caught at zero! You start next round.";b.textContent="Lost"}
-    else{st.textContent=`${lo?lo.n:"Someone"} was caught at zero`;b.textContent=me.o?"Out":"Phew"}
-    const rk="res-"+s.r+"-"+s.lo;if(P.lastResultKey!==rk){P.lastResultKey=rk;sfx("timeup");vibrate(s.lo===myI?[300,100,300]:0)}
+  const r=await api("POST",{op:"join",code:c,pid,name:n});
+  $("joinBtn").disabled=false;$("joinBtn").textContent="Enter";
+  if(!r.ok){
+    $("joinErr").textContent=r.status===404?"No game with that PIN. Check the big screen and try again."
+      :r.body.error==="kicked"?"The host removed you from this game."
+      :r.body.error==="full"?"This game is full."
+      :serverProblem(r.body);
     return;
   }
-  if(me.o){st.textContent="You're out. Watch the rest.";b.textContent="Out";return}
-  if(s.i!==myI){
+  store.set("lss-name",n);store.set("lss-player",JSON.stringify({code:c}));
+  P.code=c;P.name=n;P.st=null;P.listed=false;P.lastTouch=Date.now();
+  $("pName").textContent=n;$("pCode").textContent="PIN "+c;
+  view("player");applyPlayer(r.body.state);playerPollSoon(300);
+};
+function leaveRoom(msg){
+  clearTimeout(P.timer);cancelAnimationFrame(P.raf);
+  if(P.code)api("POST",{op:"leave",code:P.code,pid});
+  P.code="";P.st=null;store.del("lss-player");
+  view("home");$("joinErr").textContent=msg||"";
+}
+$("leave").onclick=()=>leaveRoom("");
+
+function playerPollSoon(ms){clearTimeout(P.timer);P.timer=setTimeout(playerPoll,ms)}
+async function playerPoll(){
+  if(!P.code)return;
+  const q={code:P.code,pid};
+  if(Date.now()-P.lastTouch>5000){q.touch=1;P.lastTouch=Date.now()}
+  const r=await api("GET",q);
+  if(!P.code)return;
+  if(r.ok){P.fails=0;setPlayerConn(true);applyPlayer(r.body.state)}
+  else if(r.status===404){leaveRoom("This game has ended.");return}
+  else{P.fails++;if(P.fails>=2)setPlayerConn(false)}
+  playerPollSoon(playerInterval());
+}
+/* poll quickly only when something is about to matter to this phone */
+function playerInterval(){
+  const st=P.st;if(!st)return 1000;
+  if(document.hidden)return 4000;
+  const me=st.players.findIndex(x=>x.id===pid);
+  if(st.phase==="running"&&me===st.idx){const left=st.run.since+st.run.remStart-serverNow();return Math.max(60,Math.min(700,left+80))}
+  if(st.phase==="ready"||st.phase==="running"){
+    let j=st.idx;for(let n=0;n<st.players.length;n++){j=(j+1)%st.players.length;if(!st.players[j].out)break}
+    if(j===me||me===st.idx)return 600;   // you're next, or it's your turn
+    return 1500;
+  }
+  return 2000;                            // lobby or results
+}
+function setPlayerConn(ok){const c=$("pConn");c.textContent=ok?"":"Reconnecting to the game…";c.classList.toggle("bad",!ok)}
+
+function applyPlayer(st){
+  if(!st||!P.code)return;
+  if(P.st&&st.v<P.st.v)return;
+  if(st.phase==="closed"){leaveRoom("The host closed the room.");return}
+  const listed=st.players.some(x=>x.id===pid);
+  if(P.listed&&!listed&&st.phase==="lobby"){leaveRoom("The host removed you from the game.");return}
+  if(listed)P.listed=true;
+  P.st=st;renderPlayer();
+  cancelAnimationFrame(P.raf);
+  if(st.phase==="running"&&st.players[st.idx]&&st.players[st.idx].id===pid){const f=()=>{renderPlayer();if(P.st&&P.st.phase==="running")P.raf=requestAnimationFrame(f)};P.raf=requestAnimationFrame(f)}
+}
+
+function renderPlayer(){
+  const s=P.st,b=$("pBtn"),st=$("pStatus"),note=$("pNote");
+  b.className="big";b.disabled=true;note.textContent="";
+  setTimeUp(!!(s&&(s.phase==="roundover"||s.phase==="gameover")));
+  if(!s){st.textContent="Joining the room…";b.textContent="Wait";return}
+  const pl=s.players,myI=pl.findIndex(x=>x.id===pid),me=pl[myI],cur=pl[s.idx];
+  if(s.phase==="lobby"){st.textContent=me?"You're in! Watch the big screen.":"Joining the room…";b.textContent="Ready";note.textContent=me?`${pl.length} players in the room`:"";return}
+  if(myI<0){st.textContent="Game in progress";b.textContent="Watch";note.textContent="You'll join when the host goes back to setup.";return}
+  if(s.phase==="roundover"||s.phase==="gameover"){
+    const lo=pl[s.loser];
+    if(s.phase==="gameover"){const w=pl[s.winner];st.textContent=w&&w.id===pid?"You win!":`${w?w.n:"Someone"} wins`;b.textContent=w&&w.id===pid?"Winner":"Game over"}
+    else if(s.loser===myI){st.textContent=me.out?"Caught at zero. You're out.":"Caught at zero! You start next round.";b.textContent="Lost"}
+    else{st.textContent=`${lo?lo.n:"Someone"} was caught at zero`;b.textContent=me.out?"Out":"Phew"}
+    const rk="res-"+s.round+"-"+s.loser+"-"+s.phase;if(P.lastResultKey!==rk){P.lastResultKey=rk;sfx("timeup");vibrate(s.loser===myI?[300,100,300]:0)}
+    return;
+  }
+  if(me.out){st.textContent="You're out. Watch the rest.";b.textContent="Out";return}
+  if(s.idx!==myI){
     st.textContent=cur?`${cur.n} is holding the clock`:"Wait for your turn";
     b.textContent="Wait";
-    let k=0,j=s.i;for(let n=0;n<pl.length;n++){j=(j+1)%pl.length;if(!pl[j].o){k++;if(j===myI)break}}
+    let k=0,j=s.idx;for(let n=0;n<pl.length;n++){j=(j+1)%pl.length;if(!pl[j].out){k++;if(j===myI)break}}
     note.textContent=k===1?"You're next. Get ready.":"";
     return;
   }
-  const key=s.r+"-"+s.i+"-"+s.t;
+  const key=s.round+"-"+s.idx+"-"+s.log.length;
   if(P.lastTurnKey!==key){P.lastTurnKey=key;vibrate(200)}
-  b.disabled=pending;
-  if(s.ph==="ready"){st.textContent="Your turn!";b.textContent="Start";b.classList.add("go")}
-  else if(s.cs){st.textContent="The clock is running";b.textContent="Stop";b.classList.add("stop")}
-  else{st.textContent="The clock is running";b.textContent="Hold…";b.classList.add("locked");note.textContent="Stop unlocks in a moment"}
+  b.disabled=P.pressing;
+  if(s.phase==="ready"){st.textContent="Your turn!";b.textContent="Start";b.classList.add("go")}
+  else{
+    const canStop=serverNow()-s.run.since>=s.settings.minHold*1000;
+    st.textContent="The clock is running";
+    if(canStop){b.textContent="Stop";b.classList.add("stop")}
+    else{b.textContent="Hold…";b.classList.add("locked");note.textContent="Stop unlocks in a moment"}
+  }
 }
-$("pBtn").onclick=()=>{
-  const s=P.host;if(!s||!P.conn)return;
-  if(s.ph==="running"&&!s.cs){sfx("locked");const b=$("pBtn");b.classList.remove("shake");void b.offsetWidth;b.classList.add("shake");return}
-  sfx(s.ph==="ready"?"start":"stop");
-  P.press++;store.set("lss-press-"+P.code,String(P.press));
-  P.pendingSeq=s.seq;P.pendingAt=Date.now();
-  try{P.conn.send({t:"press",n:P.press})}catch(e){}
-  $("pBtn").disabled=true;setTimeout(renderPlayer,2100);
+$("pBtn").onclick=async()=>{
+  const s=P.st;if(!s||!P.code||P.pressing)return;
+  if(s.phase==="running"&&serverNow()-s.run.since<s.settings.minHold*1000){sfx("locked");shake($("pBtn"));return}
+  sfx(s.phase==="ready"?"start":"stop");
+  P.pressing=true;renderPlayer();
+  const r=await api("POST",{op:"press",code:P.code,pid,expect:s.phase});
+  P.pressing=false;
+  if(r.body&&r.body.state)applyPlayer(r.body.state);else renderPlayer();
+  if(!r.ok&&r.body.error==="locked"){sfx("locked");shake($("pBtn"))}
+  if(!r.ok&&r.status===0)$("pNote").textContent="That press didn't reach the game. Tap again.";
+  playerPollSoon(playerInterval());
 };
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&P.code)playerPollSoon(0)});
 function vibrate(p){try{if(p&&navigator.vibrate)navigator.vibrate(p)}catch(e){}}
 
 /* ---------- sound effects (generated, no audio files) ---------- */
@@ -782,9 +651,8 @@ function sfx(kind){
 }
 document.addEventListener("click",e=>{const b=e.target.closest("button");if(b&&!b.disabled&&b.id!=="hostPress"&&b.id!=="pBtn")sfx("tap")});
 
-if(!peerOk)$("hostErr").textContent="The connection library did not load. Check your internet connection and reload.";
 checkResume();
-window.__lss={G,P,get pid(){return pid}}; // read-only hook for automated checks
+window.__lss={H,P,get pid(){return pid},serverNow}; // read-only hook for automated checks
 </script>
 </body>
 </html>

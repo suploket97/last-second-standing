@@ -1,106 +1,82 @@
-# Last Second Standing (peer-to-peer edition)
+# Last Second Standing
 
 A pass-the-clock party game. The host puts the game on a big screen, players join on their phones with a 4-character game PIN (or by scanning the QR code), and each player starts and stops a shared countdown. Whoever is holding the clock when it hits zero loses.
 
-No accounts, no database, no game server. The whole game is one file: `index.html`.
+Works on any network: eduroam and other university Wi-Fi, mobile data, guest Wi-Fi, home Wi-Fi.
 
 ## How it works
 
-- The **host's browser is the game server.** It keeps the official clock, the player list and the scores.
-- **Phones connect straight to the host's browser** (WebRTC, the same technology video calls use) and send only their button presses.
-- The free PeerJS service introduces a phone to the host when it joins. No game data is stored anywhere.
-- **On locked-down networks** (eduroam and other university Wi-Fi, schools, offices, guest Wi-Fi) devices are not allowed to reach each other directly. There, the game sends its messages through a **relay server** on port 443, the same port as ordinary secure websites, so those networks let it through. This is how video-call apps work too. Wherever a direct link is possible, the game still uses it.
+This uses the same approach as the Samaggi University Challenge app.
+
+- **The game runs on Vercel serverless functions** (`api/game.js`). Only the server changes the game.
+- **Each room is stored in Upstash Redis** for 12 hours. Every change gets a version number and is saved with a compare-and-set, so two presses at the same moment can never both count.
+- **The server times every press with its own clock.** Network lag on a phone doesn't change how long someone held the clock, so it's fair for everyone.
+- **The big screen and the phones check for updates several times a second.** Phones check faster when it's their turn or they're next, and slower otherwise. This keeps usage low.
+- Everything is ordinary HTTPS, the same as loading a website, so no network blocks it. There is no peer-to-peer connection and no relay server.
 
 ## Files
 
 | File | What it is |
 | --- | --- |
-| `index.html` | The whole game |
-| `api/ice.js` | A tiny Vercel function that hands out your relay server details, so your relay passwords never appear in the web page |
-| `vercel.json` | Tells Vercel not to cache old versions, so updates show up straight away |
+| `index.html` | The game: home, host setup, big screen and phone screen |
+| `api/game.js` | The game server (a Vercel function). No packages to install. |
+| `vercel.json` | Tells Vercel not to cache old versions of the page |
 | `README.md` | This guide |
 
-## Deploy on Vercel
+## Setup (about 10 minutes, free)
 
-The game is a plain static site, so Vercel needs no build step.
+### 1. Put the files on Vercel
 
-**Option A: from GitHub (recommended)**
+Put `index.html`, `vercel.json` and the `api` folder at the top level of your project (not inside another folder). If you are replacing the peer-to-peer version, delete the old `api/ice.js`.
 
-1. Create a GitHub repository and upload `index.html`, `vercel.json` and the `api` folder to the top level of it (not inside another folder).
-2. In Vercel, click **Add New → Project** and import that repository.
-3. Leave **Framework Preset** as **Other**. Leave the build command, output directory and install command empty.
-4. Click **Deploy**. Your game is live at `https://your-project.vercel.app`.
+- **From GitHub:** push the files, then in Vercel use **Add New → Project** and import the repository. Leave **Framework Preset** as **Other** and the build settings empty.
+- **From your computer:** run `npx vercel --prod` in this folder. If asked for a framework, choose **Other**.
 
-Every time you push a change to GitHub, Vercel redeploys automatically.
+### 2. Connect Upstash Redis
 
-**Option B: from your computer with the Vercel CLI**
+Choose one way.
 
-You need Node.js installed. In a terminal, inside this folder, run:
+**Option A: through Vercel (easiest)**
 
-```
-npx vercel          # first time: answer the setup questions, accept the defaults
-npx vercel --prod   # publish to your live address
-```
+1. In your Vercel project, open the **Storage** tab and click **Create Database** (or **Connect Store**).
+2. Choose **Upstash for Redis** (it may be listed under the Marketplace), pick the free plan and the region closest to you (for the UK, choose a London or EU region), and create it.
+3. Connect it to this project. Vercel adds the environment variables `KV_REST_API_URL` and `KV_REST_API_TOKEN` for you.
 
-If Vercel asks for a framework, choose **Other**.
+**Option B: directly in Upstash (or reuse the Samaggi database)**
 
-**If you already deployed the earlier version**, replace `index.html` with this one, add `vercel.json` and the `api` folder, then push or run `npx vercel --prod` again.
+1. Sign in at https://console.upstash.com and create a Redis database on the free plan, or open the one you already have.
+2. In the database's **REST API** section, copy the **UPSTASH_REDIS_REST_URL** and **UPSTASH_REDIS_REST_TOKEN**.
+3. In Vercel → your project → **Settings → Environment Variables**, add those two with the same names.
+
+Sharing the database with the Samaggi app is fine. This game only uses keys that start with `lss:`.
+
+### 3. Redeploy
+
+Environment variables only take effect after a redeploy. In Vercel go to **Deployments**, open the latest one and click **Redeploy**.
+
+### 4. Check it works
+
+Open your site and click **Create a room**. If a PIN appears, everything is connected. If you see "The game server isn't connected to its storage yet", check the environment variable names from step 2 and redeploy.
 
 ## How to play
 
-1. On the laptop or TV, open your Vercel address and click **Create a room**. A game PIN and QR code appear.
+1. On the laptop or TV, open your site and click **Create a room**. A game PIN and QR code appear.
 2. Players open the same address on their phones (or scan the QR code), type the PIN and a nickname, and tap **Enter**. They appear in the host's list as they join.
 3. The host sets the time, the loser rule and the minimum hold, then clicks **Start game**. The host screen becomes the big countdown display.
 4. The player whose turn it is gets a green **Start** button. They press it to start the clock and press **Stop** to pass it on. Everyone else sees a grey **Wait** button, and the next player gets a "You're next" warning.
-5. When the clock reaches zero, whoever is holding it loses:
+5. When the clock reaches zero, every screen turns red and whoever is holding the clock loses:
    - **Loser starts next round**: everyone stays in and losses are counted.
    - **Loser is eliminated**: the game continues until one player is left.
 
 Players without a phone can still play. Add their names on the setup screen and the host presses **Start/Stop for [name]** (or the space bar) for them.
 
-## Switch on the relay server (needed for eduroam and similar networks)
-
-Without a relay, phones on eduroam and other university, school, office or guest Wi-Fi will see "this network blocks direct connections". The setup screen tells you whether the relay is on.
-
-Choose **one** provider. Both have free allowances that a party game will never get near.
-
-**Option A: Cloudflare (recommended, first 1,000 GB per month free)**
-
-1. Sign in at https://dash.cloudflare.com (a free account is fine).
-2. Open **Realtime** in the left menu, then **TURN Server**, and create a new TURN key. Give it any name.
-3. Copy the two values Cloudflare shows: the **Turn Token ID** and the **API Token**. The API token is only shown once.
-4. In Vercel, open your project → **Settings → Environment Variables** and add:
-   - `CF_TURN_KEY_ID` = the Turn Token ID
-   - `CF_TURN_API_TOKEN` = the API Token
-5. Redeploy (Vercel → **Deployments** → the latest one → **Redeploy**). Environment variables only take effect after a redeploy.
-
-Cloudflare may ask you to add a payment method to use Realtime. You are only charged beyond the free 1,000 GB, and one game uses a tiny fraction of 1 GB.
-
-**Option B: ExpressTURN (free plan, 1 TB per month, no card)**
-
-1. Sign up at https://www.expressturn.com and copy your TURN username and password from the dashboard.
-2. In Vercel → **Settings → Environment Variables**, add:
-   - `EXPRESSTURN_USERNAME` = your username
-   - `EXPRESSTURN_PASSWORD` = your password
-   - `EXPRESSTURN_HOST` = only if your dashboard shows a server other than `relay1.expressturn.com`
-3. Redeploy.
-
-**Check it worked:** open your game, click **Create a room**, and look under the PIN. It should say **"Relay server on"**. When phones join, the player list shows **Phone · direct** or **Phone · relay** for each one, so you can see which route each phone is using.
-
-## If a phone still can't connect
-
-1. Make sure the setup screen says **"Relay server on"**. If it says off, check the environment variable names and redeploy.
-2. Turn off any VPN on the phone and on the laptop.
-3. Use Chrome or Safari. Brave, and Firefox with strict privacy settings, can block the connection type the game uses.
-4. As a quick workaround with no setup, connect the laptop and all phones to one phone's personal hotspot.
-
 ## Good to know
 
-- **Keep the host page open.** It runs the game. Closing it ends the game for everyone.
-- **Refreshing is safe.**
-  - If the host page refreshes, click **Resume room** on the home page. The same PIN reopens, and phones reconnect by themselves within a few seconds. The current turn restarts from the last saved time.
-  - If a phone refreshes, the player enters the PIN again and keeps their place.
-- **Screens stay awake** during a game on browsers that support it.
-- **Close room** on the setup screen ends the game and tells every phone.
-- To try it on one computer before deploying, run `npx vercel dev` in this folder and open the local address in two browser windows: one to host and one to join. (`python3 -m http.server` also works, but without the relay function.)
-- Your relay details stay in Vercel's environment variables. The `api/ice` function only answers requests from your own game page and hands out passwords that expire after 6 hours (Cloudflare).
+- **Refreshing is safe, because the server keeps the game.**
+  - If the host page refreshes or closes, open the site again and click **Resume room**. The game continues exactly where it was, even mid-turn.
+  - If a phone refreshes, the PIN and nickname are filled in. The player taps **Enter** and keeps their place.
+- **Time up never depends on someone pressing.** The server works out the exact moment the clock reached zero, even if a phone's last press arrives late.
+- **Removing a player** (✕ on the setup screen) sends their phone back to the home screen, and they can't rejoin that room.
+- **Close room** ends the game and tells every phone.
+- **Free usage:** the Upstash free plan includes 500,000 commands a month, and the Vercel Hobby plan includes 1,000,000 function invocations. A game with 10 phones uses roughly 30,000–40,000 of each per hour, so about 12 hours of play a month fits in the free plans. If you play more, Upstash's pay-as-you-go plan costs very little at this scale.
+- **Testing on your own computer:** run `npx vercel dev` in this folder after adding the environment variables to a `.env.local` file, then open the local address in two browser windows: one to host and one to join.
