@@ -12,7 +12,7 @@
 /* Layout: three roles in one site — host setup that turns into a big show screen, and a phone screen that is one giant button */
 :root{
   --bg:#eef0f4; --panel:#ffffff; --ink:#151a24; --muted:#5b6474; --line:#d5dae3;
-  --accent:#ff4d2e; --accent-ink:#ffffff; --go:#1f9d6b; --idle:#aab2c0;
+  --accent:#ff4d2e; --accent-ink:#ffffff; --go:#1f9d6b; --idle:#aab2c0; --alarm:#d62839; --alarm-ink:#ffffff;
   --display:"Bungee","Impact",system-ui,sans-serif;
   --body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
   --mono:"Azeret Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
@@ -20,7 +20,7 @@
 }
 @media (prefers-color-scheme: dark){:root{
   --bg:#0f1219; --panel:#181d27; --ink:#eef1f6; --muted:#97a0b1; --line:#2a3140;
-  --accent:#ff6347; --accent-ink:#140806; --go:#3cc48f; --idle:#3a4252; color-scheme:dark}}
+  --accent:#ff6347; --accent-ink:#140806; --go:#3cc48f; --idle:#3a4252; --alarm:#b3122a; --alarm-ink:#ffffff; color-scheme:dark}}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{min-height:100%}
@@ -136,7 +136,13 @@ button:disabled{cursor:default;opacity:.55}
 .big.go{animation:pulse 1.4s infinite}
 .conn{font-size:.8rem;color:var(--muted)}
 .conn.bad{color:var(--accent);font-weight:700}
-@media (prefers-reduced-motion:reduce){.shake,.big.go{animation:none}.big{transition:none}}
+/* time up: the whole screen turns red, the phone button goes grey */
+body.timeup{background:var(--alarm);color:var(--alarm-ink);transition:background .25s}
+body.timeup .panel{color:var(--ink)}
+body.timeup .pl-status,body.timeup .pl-note,body.timeup .pl-top .me,body.timeup .pl-top .me small,
+body.timeup .show-top h1,body.timeup .show-top h1 span,body.timeup .show-top .code,body.timeup .show-top .label,body.timeup .show-top .join-url{color:var(--alarm-ink)!important}
+body.timeup .big,body.timeup .big:disabled{--c:var(--idle);background:var(--idle);color:var(--ink);animation:none;opacity:1}
+@media (prefers-reduced-motion:reduce){.shake,.big.go{animation:none}.big{transition:none}body.timeup{transition:none}}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
@@ -184,6 +190,7 @@ button:disabled{cursor:default;opacity:.55}
       <span class="label" style="margin-top:6px">Game PIN</span>
       <span class="code" id="aCode">····</span>
       <span class="conn" id="hConn"></span>
+      <span class="conn" id="hRelay"></span>
     </div>
     <img class="qr" id="aQr" alt="QR code that opens the join page with this PIN filled in" hidden>
   </section>
@@ -275,43 +282,32 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",
 const fmt=ms=>{ms=Math.max(0,ms);const s=ms/1000,m=Math.floor(s/60);return m+":"+(s%60).toFixed(1).padStart(4,"0")};
 const TIMES=[30,60,90,120], HOLDS=[0,1,2,3];
 const VIEWS=["home","admin","show","player"];
-function view(id){VIEWS.forEach(v=>$(v).hidden=v!==id);window.scrollTo(0,0);keepAwake(id!=="home")}
+function setTimeUp(on){document.body.classList.toggle("timeup",!!on)}
+function view(id){if(id==="home"||id==="admin")setTimeUp(false);VIEWS.forEach(v=>$(v).hidden=v!==id);window.scrollTo(0,0);keepAwake(id!=="home")}
 const store={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
 const joinBase=location.origin+location.pathname;
 const prettyUrl=joinBase.replace(/^https?:\/\//,"").replace(/index\.html$/,"").replace(/\/$/,"");
 const PREFIX="last-second-standing-v1-";   // keeps our room IDs apart from other apps on the shared PeerJS service
 const peerOk=typeof window.Peer==="function";
 
-/* ================= RELAY SERVER (TURN) — fill in ONE option, see README ================= */
-/* Some networks (mobile data, guest Wi-Fi, schools, offices) block direct phone-to-screen
-   connections. A relay server passes the game messages along when that happens. */
-const RELAY={
-  // Option A — Metered (free 20 GB/month): paste your credentials URL, e.g.
-  // "https://yourapp.metered.live/api/v1/turn/credentials?apiKey=YOUR_API_KEY"
-  meteredUrl:"",
-  // Option B — any TURN service, e.g. ExpressTURN (free 1 TB/month): paste username and password
-  turnUrls:["turn:relay1.expressturn.com:3478?transport=udp","turn:relay1.expressturn.com:3478?transport=tcp","turns:relay1.expressturn.com:443?transport=tcp"],
-  turnUsername:"",
-  turnPassword:""
-};
-/* ======================================================================================== */
+/* ---------- connection servers ----------
+   STUN helps phones find a direct route to the big screen. When a network blocks direct
+   routes (eduroam, school, office, guest Wi-Fi), a relay (TURN) server on port 443 carries
+   the messages instead. Relay passwords live in Vercel environment variables and are handed
+   out by /api/ice (see README), so nothing secret is written into this page. */
 const STUN=[{urls:["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]},{urls:"stun:stun.cloudflare.com:3478"}];
-// PeerJS's own free relay servers (no signup). Kept as a built-in fallback for blocked networks.
-const PEERJS_DEFAULT=(()=>{try{const d=window.peerjs&&peerjs.util&&peerjs.util.defaultConfig;if(d&&Array.isArray(d.iceServers))return d.iceServers.filter(s=>JSON.stringify(s).includes("turn:"))}catch(e){}
+// PeerJS's own free relay servers (no signup, port 3478 only). Last-resort fallback.
+const PEERJS_DEFAULT=(()=>{try{const d=window.peerjs&&peerjs.util&&peerjs.util.defaultConfig;if(d&&Array.isArray(d.iceServers)){const t=d.iceServers.filter(s=>JSON.stringify(s).includes("turn:"));if(t.length)return t}}catch(e){}
   return [{urls:["turn:eu-0.turn.peerjs.com:3478","turn:us-0.turn.peerjs.com:3478"],username:"peerjs",credential:"peerjsp"}]})();
-let relayOn=false;
+let relayOn=false,relayProvider="";
 const iceReady=(async()=>{
-  let servers=[...STUN,...PEERJS_DEFAULT];
+  let own=[];
   try{
-    if(RELAY.meteredUrl){
-      const r=await fetch(RELAY.meteredUrl);const list=await r.json();
-      if(Array.isArray(list)&&list.length){servers=servers.concat(list);relayOn=true}
-    }
-  }catch(e){}
-  if(!relayOn&&RELAY.turnUsername&&RELAY.turnPassword){
-    servers.push({urls:RELAY.turnUrls,username:RELAY.turnUsername,credential:RELAY.turnPassword});relayOn=true;
-  }
-  return servers;
+    const ctl=new AbortController();const t=setTimeout(()=>ctl.abort(),5000);
+    const r=await fetch("/api/ice",{signal:ctl.signal,cache:"no-store"});clearTimeout(t);
+    if(r.ok){const j=await r.json();if(j&&j.relay&&Array.isArray(j.iceServers)){own=j.iceServers;relayOn=true;relayProvider=String(j.provider||"")}}
+  }catch(e){/* no relay function (e.g. running locally): use the built-in servers */}
+  return relayOn?[...own,...PEERJS_DEFAULT]:[...STUN,...PEERJS_DEFAULT];
 })();
 async function peerOpts(){return {debug:0,config:{iceServers:await iceReady}}}
 function rid(n){const a="abcdefghijkmnpqrstuvwxyz23456789";let s="";for(let i=0;i<n;i++)s+=a[Math.floor(Math.random()*a.length)];return s}
@@ -378,6 +374,7 @@ function attachHost(c,p){
   p.on("open",()=>setHostConn(true));
   p.on("error",e=>{if(e&&e.type==="network")setHostConn(false)});
   setHostConn(true);
+  iceReady.then(()=>{const el=$("hRelay");el.textContent=relayOn?"Relay server on: phones on any network can join.":"Relay server off: phones on university, school or guest Wi-Fi may not be able to join. See the README.";el.classList.toggle("bad",!relayOn)});
 }
 function setHostConn(ok){const el=$("hConn");if(el){el.textContent=ok?"":"Reconnecting to the join service… players already in the game are not affected.";el.classList.toggle("bad",!ok)}}
 
@@ -397,7 +394,7 @@ function onHostMsg(conn,d){
       let n=name,k=2;while(G.players.some(x=>x.n.toLowerCase()===n.toLowerCase()))n=name+" "+(k++);
       G.players.push({id:pid,n,out:false,l:0,phone:true});
     }
-    publish();refreshHost();return;
+    publish();refreshHost();detectRoute(pid,conn);return;
   }
   if(d.t==="press"){
     const pid=conn.__pid;if(!pid)return;
@@ -408,6 +405,21 @@ function onHostMsg(conn,d){
     if(pl&&G.players[G.idx]===pl&&(G.phase==="ready"||G.phase==="running"))doPress();
     else sendState(conn);
   }
+}
+/* find out whether a phone is connected directly or through the relay (shown on the setup list) */
+async function detectRoute(pid,conn){
+  await new Promise(r=>setTimeout(r,1500));
+  const pc=conn.peerConnection;if(!pc||!pc.getStats)return;
+  try{
+    const st=await pc.getStats(),by={};let pair=null;
+    st.forEach(x=>{by[x.id]=x});
+    st.forEach(x=>{if(x.type==="transport"&&x.selectedCandidatePairId)pair=by[x.selectedCandidatePairId]});
+    if(!pair)st.forEach(x=>{if(x.type==="candidate-pair"&&x.state==="succeeded"&&(x.selected||x.nominated))pair=x});
+    if(!pair)return;
+    const l=by[pair.localCandidateId],r=by[pair.remoteCandidateId];
+    const relay=(l&&l.candidateType==="relay")||(r&&r.candidateType==="relay");
+    if(roster[pid]&&roster[pid].conn===conn){roster[pid].via=relay?"relay":"direct";refreshHost()}
+  }catch(e){}
 }
 function onHostClose(conn){
   const pid=conn.__pid;if(!pid||!roster[pid]||roster[pid].conn!==conn)return;
@@ -438,7 +450,7 @@ function renderSetup(){
   $("plist").innerHTML=G.players.length?G.players.map((p,i)=>{
     const on=p.phone&&roster[p.id]&&roster[p.id].online;
     return `<li><span class="num">${i+1}</span><span class="nm">${esc(p.n)}</span>
-    ${p.phone?`<span class="dev ${on?"on":""}">${on?"Phone":"Offline"}</span>`:`<span class="dev">Host presses</span>`}
+    ${p.phone?`<span class="dev ${on?"on":""}" title="${on&&roster[p.id].via==="relay"?"Connected through the relay server":on?"Connected directly":""}">${on?(roster[p.id].via==="relay"?"Phone · relay":roster[p.id].via==="direct"?"Phone · direct":"Phone"):"Offline"}</span>`:`<span class="dev">Host presses</span>`}
     <button class="icon-btn" data-up="${i}" aria-label="Move ${esc(p.n)} up" ${i?"":"disabled"}>↑</button>
     <button class="icon-btn" data-del="${i}" aria-label="Remove ${esc(p.n)}">✕</button></li>`}).join("")
     :`<li class="empty">No players yet. Players go to ${esc(prettyUrl)} and enter the PIN, or scan the QR code.</li>`;
@@ -510,7 +522,7 @@ function alive(){return G.players.filter(p=>!p.out).length}
 function nextAlive(i){const n=G.players.length;for(let k=1;k<=n;k++){const j=(i+k)%n;if(!G.players[j].out)return j}return i}
 function startRound(starter){
   G.round++;G.remaining=G.total*1000;G.idx=starter;G.running=false;G.canStop=false;G.log=[];G.loser=-1;G.phase="ready";G.tag="";G.msg="";
-  view("show");$("stage").hidden=false;$("resultPanel").hidden=true;renderShow();publish();
+  setTimeUp(false);view("show");$("stage").hidden=false;$("resultPanel").hidden=true;renderShow();publish();
 }
 function stopClock(){cancelAnimationFrame(G.raf);clearTimeout(G.holdTimer);G.running=false}
 
@@ -593,7 +605,7 @@ function showResult(){
   $("rTag").textContent=G.tag;$("rTag").classList.toggle("win",G.phase==="gameover");$("rMsg").textContent=G.msg;
   $("nextRound").textContent=G.phase==="gameover"?"Play again":"Next round";
   $("rTable").innerHTML=G.players.map((p,i)=>`<tr><td>${esc(p.n)}</td><td>${p.out?(i===G.loser?"Eliminated":"Out"):(i===G.loser?"Lost this round":(i===G.winner?"Winner":"In"))}</td><td>${p.l}</td></tr>`).join("");
-  $("stage").hidden=true;$("resultPanel").hidden=false;
+  $("stage").hidden=true;$("resultPanel").hidden=false;setTimeUp(true);
 }
 $("nextRound").onclick=()=>{
   if(G.phase==="gameover"){G.players.forEach(p=>{p.out=false;p.l=0});G.round=0;G.winner=-1;startRound(0);return}
@@ -634,7 +646,7 @@ $("joinForm").onsubmit=async e=>{
   if(r==="ice"){$("joinBtn").textContent="Still connecting…";r=await connectToHost(true)}  // one automatic retry
   if(r==="ice")$("joinErr").textContent=relayOn
     ?"Could not connect to the big screen, even through the relay server. Check your internet connection and try again."
-    :"Your phone found the game, but this network blocked the connection. Join the same Wi-Fi as the big screen (not a guest network), turn off any VPN, and try again.";
+    :"Your phone found the game, but this network blocks direct connections (common on eduroam, school and office Wi-Fi). Ask the host to switch on the relay server (see the README), or connect everyone to one phone's hotspot.";
   const ok=r===true;
   resetJoin();
   if(ok){$("pName").textContent=n;$("pCode").textContent="PIN "+c.toUpperCase();view("player");renderPlayer()}
@@ -704,6 +716,7 @@ $("leave").onclick=()=>{endPlayer("")};
 function renderPlayer(){
   const s=P.host,b=$("pBtn"),st=$("pStatus"),note=$("pNote");
   b.className="big";b.disabled=true;note.textContent="";
+  setTimeUp(!!(P.conn&&s&&(s.ph==="roundover"||s.ph==="gameover")));
   if(!P.conn){st.textContent="Lost the big screen";b.textContent="Wait";note.textContent="Trying to reconnect. Keep this page open.";return}
   if(!s){st.textContent="Joining the room…";b.textContent="Wait";return}
   const pl=Array.isArray(s.pl)?s.pl:[];
