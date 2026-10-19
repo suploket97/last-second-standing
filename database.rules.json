@@ -1,0 +1,31 @@
+{
+  "rules": {
+    "rooms": {
+      "$code": {
+        ".read": "auth != null",
+        ".write": "auth != null && data.child('host').val() === auth.uid",
+        ".validate": "$code.matches(/^[a-z0-9]{4}$/)",
+        "host": {
+          ".write": "auth != null && !data.exists() && newData.val() === auth.uid"
+        },
+        "created": {
+          ".write": "auth != null && newData.parent().child('host').val() === auth.uid"
+        },
+        "state": {
+          ".write": "auth != null && root.child('rooms').child($code).child('host').val() === auth.uid"
+        },
+        "players": {
+          "$uid": {
+            ".write": "auth != null && (auth.uid === $uid || root.child('rooms').child($code).child('host').val() === auth.uid)",
+            ".validate": "newData.hasChildren(['name', 'press'])",
+            "name": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 20" },
+            "press": { ".validate": "newData.isNumber()" },
+            "online": { ".validate": "newData.isBoolean()" },
+            "joinedAt": { ".validate": "newData.isNumber()" },
+            "$other": { ".validate": false }
+          }
+        }
+      }
+    }
+  }
+}

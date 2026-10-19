@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Last Second Standing</title>
+<meta name="theme-color" content="#eef0f4">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bungee&family=Barlow:wght@400;500;600;700&family=Azeret+Mono:wght@500;700&display=swap">
+<style>
+/* Layout: three roles in one site — host setup that turns into a big show screen, and a phone screen that is one giant button */
+:root{
+  --bg:#eef0f4; --panel:#ffffff; --ink:#151a24; --muted:#5b6474; --line:#d5dae3;
+  --accent:#ff4d2e; --accent-ink:#ffffff; --go:#1f9d6b; --idle:#aab2c0;
+  --display:"Bungee","Impact",system-ui,sans-serif;
+  --body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"Azeret Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#0f1219; --panel:#181d27; --ink:#eef1f6; --muted:#97a0b1; --line:#2a3140;
+  --accent:#ff6347; --accent-ink:#140806; --go:#3cc48f; --idle:#3a4252; color-scheme:dark}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{min-height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.45;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  padding-top:calc(20px + env(safe-area-inset-top,0px));padding-bottom:calc(40px + env(safe-area-inset-bottom,0px))}
+img{max-width:100%}
+.wrap{max-width:680px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.wrap.wide{max-width:980px}
+h1{font-family:var(--display);font-weight:400;font-size:clamp(1.6rem,6vw,2.3rem);line-height:1;margin:0;text-wrap:balance}
+h1 span{color:var(--accent)}
+h2{font-family:var(--display);font-weight:400;font-size:1.25rem;margin:0}
+.sub{color:var(--muted);margin:6px 0 0;max-width:60ch}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:14px}
+.label{font-size:.75rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.field{display:flex;flex-direction:column;gap:8px}
+.hint{color:var(--muted);font-size:.9rem;margin:0}
+input[type=text],input[type=number]{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;width:100%;min-width:0}
+input:focus-visible,button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.row>input{flex:1}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:9px 14px;font-weight:600}
+button:hover{border-color:var(--muted)}
+button:disabled{cursor:default;opacity:.55}
+.icon-btn{padding:4px 9px;font-size:.9rem}
+.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.primary:hover{border-color:var(--accent);filter:brightness(1.05)}
+.cta{padding:14px;font-size:1.05rem}
+.err{color:var(--accent);font-weight:600;min-height:1.2em;margin:0}
+.notice{border-color:var(--accent)}
+.notice code{font-family:var(--mono);font-size:.9em}
+
+/* home */
+.roles{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:620px){.roles{grid-template-columns:1fr}}
+.pin-input{font-family:var(--mono)!important;letter-spacing:.3em;text-transform:uppercase;font-size:1.6rem!important;text-align:center}
+
+/* setup */
+.join-card{display:grid;grid-template-columns:1fr auto;gap:18px;align-items:center}
+@media (max-width:520px){.join-card{grid-template-columns:1fr}}
+.code{font-family:var(--mono);font-weight:700;font-size:clamp(2.4rem,11vw,3.6rem);letter-spacing:.18em;line-height:1}
+.join-url{font-family:var(--mono);font-size:.95rem;overflow-wrap:anywhere}
+.qr{width:150px;height:150px;border-radius:10px;background:#fff;padding:8px;image-rendering:pixelated}
+.players{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.players li{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px}
+.players .num{font-family:var(--mono);color:var(--muted);width:1.6em;font-variant-numeric:tabular-nums}
+.players .nm{flex:1;min-width:0;overflow-wrap:anywhere;font-weight:600}
+.dev{font-size:.75rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:2px 7px;border-radius:99px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.dev.on{color:var(--go);border-color:var(--go)}
+.empty{color:var(--muted);padding:10px;border:1px dashed var(--line);border-radius:8px}
+.seg{display:flex;gap:6px;flex-wrap:wrap}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.choice{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+@media (max-width:460px){.choice{grid-template-columns:1fr}}
+.choice button{text-align:left;display:flex;flex-direction:column;gap:2px;padding:12px}
+.choice button small{font-weight:400;color:var(--muted)}
+.choice button[aria-pressed="true"]{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.toggle{display:flex;align-items:center;gap:10px;font-weight:500}
+.toggle input{width:20px;height:20px;accent-color:var(--accent)}
+
+/* show screen */
+.show-top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.show-top .code{font-size:1.6rem}
+.stage{display:flex;flex-direction:column;align-items:center;gap:16px;text-align:center;padding-block:28px}
+.round{font-family:var(--mono);font-size:.85rem;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.clock{font-family:var(--mono);font-weight:700;font-size:clamp(4rem,20vw,11rem);line-height:.95;font-variant-numeric:tabular-nums;letter-spacing:-.03em}
+.clock.low{color:var(--accent)}
+.clock.masked{color:var(--muted)}
+.bar{width:100%;height:10px;background:var(--line);border-radius:99px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--go);width:100%}
+.bar i.low{background:var(--accent)}
+.turn{font-size:1.05rem;color:var(--muted)}
+.turn b{display:block;font-family:var(--display);font-weight:400;font-size:clamp(2rem,8vw,3.4rem);color:var(--ink);overflow-wrap:anywhere;line-height:1.1}
+.state{display:inline-block;font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-size:.8rem;padding:4px 10px;border-radius:99px;background:var(--idle);color:var(--ink)}
+.state.run{background:var(--accent);color:var(--accent-ink)}
+.queue{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+.chip{padding:5px 11px;border-radius:99px;border:1px solid var(--line);font-weight:600;font-size:.95rem}
+.chip.now{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.chip.out{text-decoration:line-through;color:var(--muted);opacity:.6}
+.chip.off{border-style:dashed}
+.chip .l{font-family:var(--mono);font-size:.75rem;margin-left:5px;color:var(--accent)}
+.host-ctl{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+.log{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;max-height:200px;overflow:auto;font-variant-numeric:tabular-nums}
+.log li{display:flex;justify-content:space-between;gap:12px;padding:5px 2px;border-bottom:1px dashed var(--line);font-size:.92rem}
+.log li span:last-child{font-family:var(--mono);color:var(--muted)}
+.log li.lose span{color:var(--accent);font-weight:700}
+.result{text-align:center;align-items:center}
+.tag{font-family:var(--display);font-weight:400;font-size:clamp(2rem,9vw,3.4rem);color:var(--accent);line-height:1;overflow-wrap:anywhere}
+.tag.win{color:var(--go)}
+.result p{margin:0;max-width:48ch}
+.table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.table th,.table td{padding:7px 6px;border-bottom:1px solid var(--line);text-align:left}
+.table td:last-child,.table th:last-child{text-align:right;font-family:var(--mono)}
+.table th{font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+
+/* player screen */
+.pl{display:flex;flex-direction:column;align-items:center;gap:18px;text-align:center;min-height:calc(100vh - 80px)}
+.pl-top{width:100%;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.pl-top .me{font-weight:700;overflow-wrap:anywhere;text-align:left}
+.pl-top .me small{display:block;font-family:var(--mono);font-weight:500;color:var(--muted);letter-spacing:.1em}
+.pl-status{font-family:var(--display);font-weight:400;font-size:clamp(1.5rem,7vw,2.2rem);line-height:1.1;min-height:2.3em;display:flex;align-items:center;justify-content:center;overflow-wrap:anywhere;text-wrap:balance}
+.pl-note{color:var(--muted);min-height:1.5em;margin:0}
+.big{width:min(300px,78vw);aspect-ratio:1;max-width:100%;border-radius:50%;border:none;font-family:var(--display);font-weight:400;font-size:clamp(1.8rem,9vw,2.6rem);
+  --c:var(--idle);background:var(--c);color:#fff;box-shadow:0 12px 0 color-mix(in srgb,var(--c) 55%,#000);transition:transform .06s,box-shadow .06s,background .2s;touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+.big.go{--c:var(--go)}
+.big.stop{--c:var(--accent)}
+.big.locked{--c:color-mix(in srgb,var(--accent) 55%,var(--idle))}
+.big:disabled{opacity:1;color:var(--muted)}
+.big:not(:disabled):active{transform:translateY(8px);box-shadow:0 4px 0 color-mix(in srgb,var(--c) 55%,#000)}
+@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-7px)}75%{transform:translateX(7px)}}
+.shake{animation:shake .3s 2}
+@keyframes pulse{0%,100%{box-shadow:0 12px 0 color-mix(in srgb,var(--c) 55%,#000),0 0 0 0 color-mix(in srgb,var(--c) 50%,transparent)}50%{box-shadow:0 12px 0 color-mix(in srgb,var(--c) 55%,#000),0 0 0 18px transparent}}
+.big.go{animation:pulse 1.4s infinite}
+.conn{font-size:.8rem;color:var(--muted)}
+.conn.bad{color:var(--accent);font-weight:700}
+@media (prefers-reduced-motion:reduce){.shake,.big.go{animation:none}.big{transition:none}}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+</head>
+<body>
+
+<!-- SETUP NOTICE (shown only when firebase-config.js is not filled in) -->
+<div class="wrap" id="cfgNotice" hidden>
+  <section class="panel notice">
+    <h2>Almost ready</h2>
+    <p>This copy is not connected to a Firebase project yet. Open <code>firebase-config.js</code>, paste your project's web config, and reload. The README walks you through it in about ten minutes.</p>
+  </section>
+</div>
+
+<!-- HOME -->
+<div class="wrap" id="home">
+  <header>
+    <h1>Last Second <span>Standing</span></h1>
+    <p class="sub">Pass the clock around. Start it, stop it, hand it on. Whoever is holding it when it hits zero loses.</p>
+  </header>
+  <div class="roles">
+    <form class="panel" id="joinForm">
+      <span class="label">Your phone</span>
+      <h2>Join a game</h2>
+      <div class="field"><label class="label" for="jCode">Game PIN</label>
+        <input class="pin-input" type="text" id="jCode" maxlength="4" autocomplete="off" autocapitalize="characters" inputmode="text" placeholder="K7Q2"></div>
+      <div class="field"><label class="label" for="jName">Nickname</label>
+        <input type="text" id="jName" maxlength="20" autocomplete="nickname" placeholder="e.g. Anna"></div>
+      <p class="err" id="joinErr"></p>
+      <button class="primary cta" type="submit" id="joinBtn">Enter</button>
+    </form>
+    <section class="panel">
+      <span class="label">Big screen</span>
+      <h2>Host a game</h2>
+      <p class="hint">Set up the room on a laptop or TV. After you start, this screen becomes the countdown display.</p>
+      <p class="err" id="hostErr"></p>
+      <button class="primary cta" id="goHost">Create a room</button>
+      <button id="resumeHost" hidden>Resume room</button>
+    </section>
+  </div>
+</div>
+
+<!-- ADMIN / SETUP -->
+<div class="wrap" id="admin" hidden>
+  <header class="row" style="justify-content:space-between">
+    <h1>Last Second <span>Standing</span></h1>
+    <button id="adminBack">Close room</button>
+  </header>
+  <section class="panel join-card">
+    <div class="field">
+      <span class="label">Join on your phone at</span>
+      <span class="join-url" id="aUrl"></span>
+      <span class="label" style="margin-top:6px">Game PIN</span>
+      <span class="code" id="aCode">····</span>
+    </div>
+    <img class="qr" id="aQr" alt="QR code that opens the join page with this PIN filled in" hidden>
+  </section>
+  <section class="panel">
+    <div class="field">
+      <span class="label">Players, in turn order</span>
+      <ul class="players" id="plist"></ul>
+      <form class="row" id="addForm">
+        <input type="text" id="newName" placeholder="Add a player without a phone" maxlength="20">
+        <button type="submit">Add</button>
+      </form>
+      <p class="hint">Phone players appear here as they join. You press the button on the show screen for anyone without a phone.</p>
+    </div>
+    <div class="field">
+      <span class="label">Time on the clock</span>
+      <div class="seg" id="timeSeg"></div>
+      <div class="row"><input type="number" id="customTime" min="5" max="600" step="1" style="max-width:110px;flex:0 1 auto"> <span style="color:var(--muted)">seconds</span></div>
+    </div>
+    <div class="field">
+      <span class="label">When someone is caught at zero</span>
+      <div class="choice" id="ruleSeg">
+        <button type="button" data-rule="starter">Loser starts next round<small>Everyone stays in. Losses are tallied.</small></button>
+        <button type="button" data-rule="eliminate">Loser is eliminated<small>Play on until one player is left.</small></button>
+      </div>
+    </div>
+    <div class="field">
+      <span class="label">Minimum hold per turn</span>
+      <div class="seg" id="holdSeg"></div>
+      <p class="hint">Stop stays locked until the player has held the clock this long, so nobody can tap and pass.</p>
+    </div>
+    <label class="toggle"><input type="checkbox" id="blind"> Hide the time on the show screen while the clock runs</label>
+    <p class="err" id="setupErr"></p>
+    <button class="primary cta" id="startGame">Start game</button>
+  </section>
+</div>
+
+<!-- SHOW SCREEN -->
+<div class="wrap wide" id="show" hidden>
+  <div class="show-top">
+    <h1 style="font-size:1.3rem">Last Second <span>Standing</span></h1>
+    <div class="row"><span class="join-url" id="sUrl" style="color:var(--muted)"></span><span class="label">PIN</span><span class="code" id="sCode"></span></div>
+  </div>
+  <section class="panel stage" id="stage">
+    <div class="round" id="roundLbl"></div>
+    <div class="clock" id="clock">0:00.0</div>
+    <div class="bar"><i id="bar"></i></div>
+    <div class="turn">Holding the clock<b id="who"></b></div>
+    <span class="state" id="state">Waiting to start</span>
+    <div class="queue" id="queue"></div>
+    <div class="host-ctl">
+      <button id="hostPress">Press for player</button>
+      <button id="quit">End game</button>
+    </div>
+    <p class="hint">Space bar also presses for the current player.</p>
+  </section>
+  <section class="panel result" id="resultPanel" hidden>
+    <div class="tag" id="rTag">Time up</div>
+    <p id="rMsg"></p>
+    <table class="table"><thead><tr><th>Player</th><th>Status</th><th>Losses</th></tr></thead><tbody id="rTable"></tbody></table>
+    <div class="row" style="justify-content:center">
+      <button class="primary cta" id="nextRound">Next round</button>
+      <button id="backSetup">Change setup</button>
+    </div>
+  </section>
+  <section class="panel">
+    <span class="label">This round</span>
+    <ul class="log" id="log"></ul>
+  </section>
+</div>
+
+<!-- PLAYER -->
+<div class="wrap" id="player" hidden>
+  <div class="pl">
+    <div class="pl-top">
+      <div class="me"><span id="pName"></span><small id="pCode"></small></div>
+      <button id="leave">Leave</button>
+    </div>
+    <div class="pl-status" id="pStatus">Connecting…</div>
+    <button class="big" id="pBtn" disabled>Wait</button>
+    <p class="pl-note" id="pNote"></p>
+    <span class="conn" id="pConn"></span>
+  </div>
+</div>
+
+<script type="module">
+import { firebaseConfig } from "./firebase-config.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getDatabase, ref, set, update, get, remove, onValue, onDisconnect, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt=ms=>{ms=Math.max(0,ms);const s=ms/1000,m=Math.floor(s/60);return m+":"+(s%60).toFixed(1).padStart(4,"0")};
+const TIMES=[30,60,90,120], HOLDS=[0,1,2,3];
+const VIEWS=["home","admin","show","player"];
+function view(id){VIEWS.forEach(v=>$(v).hidden=v!==id);window.scrollTo(0,0)}
+const store={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}},del(k){try{localStorage.removeItem(k)}catch(e){}}};
+const joinBase=location.origin+location.pathname;
+const prettyUrl=joinBase.replace(/^https?:\/\//,"").replace(/index\.html$/,"").replace(/\/$/,"");
+
+/* ---------- Firebase ---------- */
+const configured=firebaseConfig&&firebaseConfig.apiKey&&!/PASTE/.test(firebaseConfig.apiKey)&&firebaseConfig.databaseURL&&!/your-project/.test(firebaseConfig.databaseURL);
+let db=null, uid=null, authReady;
+if(!configured){
+  $("cfgNotice").hidden=false;
+  authReady=Promise.reject(new Error("not configured"));authReady.catch(()=>{});
+}else{
+  const app=initializeApp(firebaseConfig);
+  db=getDatabase(app);
+  authReady=signInAnonymously(getAuth(app)).then(c=>(uid=c.user.uid));
+  authReady.catch(()=>{});
+  onValue(ref(db,".info/connected"),s=>{connected=!!s.val();onConnChange()});
+}
+let connected=false;
+function onConnChange(){
+  const c=$("pConn");c.textContent=connected?"":"Reconnecting…";c.classList.toggle("bad",!connected);
+  if(connected&&code&&!$("admin").hidden||connected&&code&&!$("show").hidden){armHostDisconnect();publish()}
+  if(connected&&P.code)armPlayerDisconnect();
+}
+const rp=(...parts)=>ref(db,["rooms",...parts].join("/"));
+
+/* ============================== HOST ============================== */
+const G={phase:"lobby",total:60,rule:"starter",minHold:1,blind:false,players:[],idx:0,running:false,
+  remaining:60000,remStart:0,turnStart:0,round:0,log:[],loser:-1,winner:-1,nextStarter:0,seq:0,raf:0,canStop:false,holdTimer:0,tag:"",msg:""};
+let code="", lastPress={}, kicked=new Set(), roster={}, unsubPlayers=null, localId=0;
+
+function genCode(){const a="abcdefghjkmnpqrstuvwxyz23456789";let s="";for(let i=0;i<4;i++)s+=a[Math.floor(Math.random()*a.length)];return s}
+
+async function createRoom(){
+  $("hostErr").textContent="";$("goHost").disabled=true;$("goHost").textContent="Creating…";
+  try{
+    await authReady;
+    let c="";
+    for(let t=0;t<8;t++){
+      const cand=genCode();
+      const snap=await get(rp(cand,"host"));
+      if(snap.exists())continue;
+      try{await set(rp(cand,"host"),uid);c=cand;break}catch(e){/* taken in the meantime */}
+    }
+    if(!c)throw new Error("no code");
+    await set(rp(c,"created"),serverTimestamp());
+    Object.assign(G,{phase:"lobby",players:[],round:0,winner:-1,loser:-1,log:[]});
+    lastPress={};kicked=new Set();
+    attachHost(c);view("admin");renderSetup();publish();
+  }catch(e){
+    $("hostErr").textContent=configured?"Could not create a room. Check your internet connection and the Firebase setup, then try again.":"Connect a Firebase project first (see the README).";
+  }
+  $("goHost").disabled=false;$("goHost").textContent="Create a room";
+}
+function attachHost(c){
+  code=c;store.set("lss-host",c);
+  const CODE=c.toUpperCase();
+  $("aCode").textContent=CODE;$("sCode").textContent=CODE;
+  $("aUrl").textContent=prettyUrl;$("sUrl").textContent=prettyUrl;
+  try{
+    if(window.qrcode){const qr=qrcode(0,"M");qr.addData(joinBase+"?pin="+CODE);qr.make();$("aQr").src=qr.createDataURL(5,2);$("aQr").hidden=false}
+  }catch(e){$("aQr").hidden=true}
+  if(unsubPlayers)unsubPlayers();
+  unsubPlayers=onValue(rp(c,"players"),s=>onPlayers(s.val()||{}));
+  armHostDisconnect();
+}
+function armHostDisconnect(){if(code&&db)onDisconnect(rp(code,"state","on")).set(false).catch(()=>{})}
+
+function publish(){
+  if(!code||!db)return;G.seq++;
+  const s={ph:G.phase,r:G.round,rule:G.rule,i:G.idx,cs:G.canStop?1:0,lo:G.loser,w:G.winner,seq:G.seq,t:G.log.length,on:true,
+    total:G.total,mh:G.minHold,bl:G.blind?1:0,rem:Math.round(G.running?G.remStart:G.remaining),ns:G.nextStarter,tag:G.tag,msg:G.msg,
+    pl:G.players.map(x=>({id:x.id,n:x.n,o:x.out?1:0,l:x.l}))};
+  set(rp(code,"state"),s).catch(()=>{});
+}
+
+function onPlayers(all){
+  roster=all;let changed=false;
+  for(const [id,pr] of Object.entries(all)){
+    if(!pr||typeof pr!=="object")continue;
+    const press=Number(pr.press)||0;
+    let pl=G.players.find(x=>x.id===id);
+    if(!pl&&!kicked.has(id)&&G.phase==="lobby"&&pr.online!==false){
+      const base=String(pr.name||"Player").slice(0,20);
+      let n=base,k=2;while(G.players.some(x=>x.n.toLowerCase()===n.toLowerCase()))n=base+" "+(k++);
+      pl={id,n,out:false,l:0,phone:true};G.players.push(pl);changed=true;
+    }
+    if(!(id in lastPress)){lastPress[id]=press;continue}
+    if(press>lastPress[id]){
+      lastPress[id]=press;
+      if(pl&&G.players[G.idx]===pl&&(G.phase==="ready"||G.phase==="running")){doPress();changed=false;continue}
+      changed=true; // let that phone resync
+    }
+  }
+  if(G.phase==="lobby"){
+    const before=G.players.length;
+    G.players=G.players.filter(x=>!x.phone||(all[x.id]&&all[x.id].online!==false));
+    if(G.players.length!==before)changed=true;
+  }
+  if(changed)publish();
+  if(!$("admin").hidden)renderSetup();
+  if(!$("show").hidden)renderShow();
+}
+
+function renderSetup(){
+  $("plist").innerHTML=G.players.length?G.players.map((p,i)=>{
+    const r=roster[p.id],on=r&&r.online!==false;
+    return `<li><span class="num">${i+1}</span><span class="nm">${esc(p.n)}</span>
+    ${p.phone?`<span class="dev ${on?"on":""}">${on?"Phone":"Offline"}</span>`:`<span class="dev">Host presses</span>`}
+    <button class="icon-btn" data-up="${i}" aria-label="Move ${esc(p.n)} up" ${i?"":"disabled"}>↑</button>
+    <button class="icon-btn" data-del="${i}" aria-label="Remove ${esc(p.n)}">✕</button></li>`}).join("")
+    :`<li class="empty">No players yet. Players go to ${esc(prettyUrl)} and enter the PIN, or scan the QR code.</li>`;
+  $("timeSeg").innerHTML=TIMES.map(t=>`<button type="button" data-t="${t}" aria-pressed="${G.total===t}">${t}s</button>`).join("");
+  $("customTime").value=G.total;
+  $("holdSeg").innerHTML=HOLDS.map(h=>`<button type="button" data-h="${h}" aria-pressed="${G.minHold===h}">${h?h+"s":"None"}</button>`).join("");
+  document.querySelectorAll("#ruleSeg button").forEach(b=>b.setAttribute("aria-pressed",b.dataset.rule===G.rule));
+  $("blind").checked=G.blind;
+}
+$("plist").onclick=e=>{
+  const b=e.target.closest("button");if(!b)return;
+  if(b.dataset.del!=null){const [x]=G.players.splice(+b.dataset.del,1);if(x&&x.phone){kicked.add(x.id);remove(rp(code,"players",x.id)).catch(()=>{})}}
+  if(b.dataset.up!=null){const i=+b.dataset.up;[G.players[i-1],G.players[i]]=[G.players[i],G.players[i-1]]}
+  renderSetup();publish();
+};
+$("addForm").onsubmit=e=>{e.preventDefault();const n=$("newName").value.trim().slice(0,20);if(!n)return;
+  if(G.players.some(p=>p.n.toLowerCase()===n.toLowerCase())){$("setupErr").textContent=`${n} is already in the list. Use a different name.`;return}
+  G.players.push({id:"local-"+(++localId)+"-"+Date.now().toString(36),n,out:false,l:0,phone:false});
+  $("newName").value="";$("setupErr").textContent="";renderSetup();publish();$("newName").focus()};
+$("timeSeg").onclick=e=>{const b=e.target.closest("button");if(b){G.total=+b.dataset.t;renderSetup();publish()}};
+$("customTime").onchange=e=>{const v=Math.round(+e.target.value);if(v>=5&&v<=600)G.total=v;renderSetup();publish()};
+$("holdSeg").onclick=e=>{const b=e.target.closest("button");if(b){G.minHold=+b.dataset.h;renderSetup();publish()}};
+$("ruleSeg").onclick=e=>{const b=e.target.closest("button");if(b){G.rule=b.dataset.rule;renderSetup();publish()}};
+$("blind").onchange=e=>{G.blind=e.target.checked;publish()};
+$("goHost").onclick=createRoom;
+$("adminBack").onclick=async()=>{
+  stopClock();
+  if(unsubPlayers){unsubPlayers();unsubPlayers=null}
+  const c=code;code="";store.del("lss-host");
+  if(c){try{await onDisconnect(rp(c,"state","on")).cancel()}catch(e){} remove(rp(c)).catch(()=>{})}
+  checkResume();view("home");
+};
+
+/* resume a room after a refresh */
+async function checkResume(){
+  const c=store.get("lss-host");$("resumeHost").hidden=true;
+  if(!c||!configured)return;
+  try{
+    await authReady;
+    const h=await get(rp(c,"host"));
+    if(h.val()===uid){$("resumeHost").hidden=false;$("resumeHost").textContent="Resume room "+c.toUpperCase()}
+    else if(!h.exists())store.del("lss-host"); // room was closed
+  }catch(e){}
+}
+$("resumeHost").onclick=async()=>{
+  const c=store.get("lss-host");if(!c)return;
+  try{
+    const s=(await get(rp(c,"state"))).val()||{};
+    const all=(await get(rp(c,"players"))).val()||{};
+    Object.assign(G,{total:s.total||60,rule:s.rule||"starter",minHold:s.mh??1,blind:!!s.bl,round:s.r||0,idx:s.i||0,
+      loser:s.lo??-1,winner:s.w??-1,nextStarter:s.ns||0,tag:s.tag||"",msg:s.msg||"",log:[],running:false,canStop:false,
+      remaining:s.rem||((s.total||60)*1000),
+      players:(s.pl||[]).map(x=>({id:x.id,n:x.n,out:!!x.o,l:x.l||0,phone:!String(x.id).startsWith("local-")}))});
+    lastPress={};for(const [id,p] of Object.entries(all))lastPress[id]=Number(p&&p.press)||0;
+    attachHost(c);
+    const ph=s.ph||"lobby";
+    if(ph==="lobby"){G.phase="lobby";view("admin");renderSetup()}
+    else if(ph==="roundover"||ph==="gameover"){G.phase=ph;view("show");showResult()}
+    else{G.phase="ready";view("show");$("stage").hidden=false;$("resultPanel").hidden=true;renderShow()}
+    publish();
+  }catch(e){$("hostErr").textContent="Could not resume that room. Create a new one instead.";store.del("lss-host");$("resumeHost").hidden=true}
+};
+
+/* ---------- game flow ---------- */
+$("startGame").onclick=()=>{
+  if(G.players.length<2){$("setupErr").textContent="Add at least two players to start.";return}
+  $("setupErr").textContent="";
+  G.players.forEach(p=>{p.out=false;p.l=0});G.round=0;G.winner=-1;
+  startRound(0);
+};
+function alive(){return G.players.filter(p=>!p.out).length}
+function nextAlive(i){const n=G.players.length;for(let k=1;k<=n;k++){const j=(i+k)%n;if(!G.players[j].out)return j}return i}
+function startRound(starter){
+  G.round++;G.remaining=G.total*1000;G.idx=starter;G.running=false;G.canStop=false;G.log=[];G.loser=-1;G.phase="ready";G.tag="";G.msg="";
+  view("show");$("stage").hidden=false;$("resultPanel").hidden=true;renderShow();publish();
+}
+function stopClock(){cancelAnimationFrame(G.raf);clearTimeout(G.holdTimer);G.running=false}
+
+function doPress(){
+  if(G.phase!=="ready"&&G.phase!=="running")return;
+  const now=performance.now();
+  if(!G.running){
+    sfx("start");
+    G.running=true;G.phase="running";G.turnStart=now;G.remStart=G.remaining;G.canStop=G.minHold===0;
+    if(!G.canStop)G.holdTimer=setTimeout(()=>{G.canStop=true;publish();renderShow()},G.minHold*1000);
+    publish();renderShow();G.raf=requestAnimationFrame(tick);return;
+  }
+  const held=now-G.turnStart;
+  if(held<G.minHold*1000){sfx("locked");const b=$("hostPress");b.classList.remove("shake");void b.offsetWidth;b.classList.add("shake");return}
+  stopClock();
+  G.remaining=G.remStart-held;
+  if(G.remaining<=0){G.remaining=0;timeUp();return}
+  sfx("stop");
+  G.log.push({n:G.players[G.idx].n,ms:held});
+  G.phase="ready";G.canStop=false;G.idx=nextAlive(G.idx);
+  publish();renderShow();
+}
+function tick(){
+  if(!G.running)return;
+  G.remaining=G.remStart-(performance.now()-G.turnStart);
+  if(G.remaining<=0){G.remaining=0;stopClock();timeUp();return}
+  drawClock();G.raf=requestAnimationFrame(tick);
+}
+// keep the clock honest if the host tab is hidden (rAF pauses in background tabs)
+setInterval(()=>{if(G.running&&document.hidden){G.remaining=G.remStart-(performance.now()-G.turnStart);if(G.remaining<=0){G.remaining=0;stopClock();timeUp()}}},250);
+
+function drawClock(){
+  const masked=G.blind&&G.running;
+  $("clock").textContent=masked?"?:??.?":fmt(G.remaining);
+  $("clock").classList.toggle("masked",masked);
+  const frac=G.remaining/(G.total*1000),low=frac<.2;
+  $("clock").classList.toggle("low",low&&!masked);
+  if(!masked){$("bar").style.width=frac*100+"%";$("bar").classList.toggle("low",low)}
+}
+function renderShow(){
+  if(G.phase==="lobby")return;
+  const cur=G.players[G.idx];
+  $("roundLbl").textContent=`Round ${G.round} · ${alive()} players · ${G.total}s on the clock`;
+  $("who").textContent=cur?cur.n:"";
+  drawClock();
+  const st=$("state");
+  if(G.running){st.textContent=G.canStop?"Clock running":"Clock running · Stop locked";st.className="state run"}
+  else{st.textContent=cur&&cur.phone?`Waiting for ${cur.n} to press Start`:"Waiting to start";st.className="state"}
+  $("queue").innerHTML=G.players.map((q,i)=>{const r=roster[q.id],off=q.phone&&!(r&&r.online!==false);
+    return `<span class="chip ${i===G.idx&&(G.phase==="ready"||G.phase==="running")?"now":""} ${q.out?"out":""} ${off?"off":""}" title="${off?"Phone offline":""}">${esc(q.n)}${q.l&&G.rule==="starter"?`<span class="l">×${q.l}</span>`:""}</span>`}).join("");
+  $("hostPress").textContent=cur?(G.running?`Stop for ${cur.n}`:`Start for ${cur.n}`):"Press for player";
+  $("log").innerHTML=G.log.length?G.log.map(l=>`<li class="${l.lose?"lose":""}"><span>${esc(l.n)}</span><span>${l.lose?"caught at 0":"held "+(l.ms/1000).toFixed(2)+"s"}</span></li>`).reverse().join("")
+    :`<li><span style="color:var(--muted)">No turns yet. ${esc(cur?cur.n:"")} starts.</span><span></span></li>`;
+}
+$("hostPress").onclick=doPress;
+document.addEventListener("keydown",e=>{
+  if(e.code==="Space"&&!$("show").hidden&&!$("stage").hidden&&!/INPUT|BUTTON/.test(document.activeElement.tagName)){e.preventDefault();doPress()}
+});
+
+function timeUp(){
+  stopClock();
+  const loser=G.players[G.idx];loser.l++;G.loser=G.idx;
+  G.log.push({n:loser.n,lose:true});sfx("timeup");
+  if(G.rule==="eliminate"){
+    loser.out=true;
+    if(alive()===1){
+      const w=G.players.findIndex(p=>!p.out);G.winner=w;G.phase="gameover";G.tag=G.players[w].n+" wins";
+      G.msg=`${loser.n} was holding the clock at zero and is out. ${G.players[w].n} is the last one standing.`;
+    }else{
+      G.nextStarter=nextAlive(G.idx);G.phase="roundover";G.tag="Time up";
+      G.msg=`${loser.n} was holding the clock at zero and is eliminated. ${alive()} players remain. ${G.players[G.nextStarter].n} starts the next round.`;
+    }
+  }else{
+    G.nextStarter=G.idx;G.phase="roundover";G.tag="Time up";
+    G.msg=`${loser.n} was holding the clock at zero, so ${loser.n} starts the next round.`;
+  }
+  renderShow();showResult();publish();
+}
+function showResult(){
+  $("rTag").textContent=G.tag;$("rTag").classList.toggle("win",G.phase==="gameover");$("rMsg").textContent=G.msg;
+  $("nextRound").textContent=G.phase==="gameover"?"Play again":"Next round";
+  $("rTable").innerHTML=G.players.map((p,i)=>`<tr><td>${esc(p.n)}</td><td>${p.out?(i===G.loser?"Eliminated":"Out"):(i===G.loser?"Lost this round":(i===G.winner?"Winner":"In"))}</td><td>${p.l}</td></tr>`).join("");
+  $("stage").hidden=true;$("resultPanel").hidden=false;
+}
+$("nextRound").onclick=()=>{
+  if(G.phase==="gameover"){G.players.forEach(p=>{p.out=false;p.l=0});G.round=0;G.winner=-1;startRound(0);return}
+  startRound(G.nextStarter);
+};
+function toSetup(){stopClock();G.phase="lobby";onPlayers(roster);publish();view("admin");renderSetup()}
+$("backSetup").onclick=toSetup;
+$("quit").onclick=toSetup;
+
+/* ============================== PLAYER ============================== */
+const P={name:"",code:"",press:0,host:null,pendingSeq:-1,pendingAt:0,lastTurnKey:"",lastResultKey:"",unsub:[],wasListed:false};
+(function prefill(){
+  const q=new URLSearchParams(location.search).get("pin");
+  if(q&&/^[a-z0-9]{4}$/i.test(q)){$("jCode").value=q.toUpperCase();setTimeout(()=>$("jName").focus(),50)}
+  const n=store.get("lss-name");if(n)$("jName").value=n;
+})();
+
+$("joinForm").onsubmit=async e=>{
+  e.preventDefault();
+  audio(); // unlock sound on the phone with this tap
+  const c=$("jCode").value.trim().toLowerCase().replace(/[^a-z0-9]/g,"");
+  const n=$("jName").value.trim().slice(0,20);
+  if(c.length!==4){$("joinErr").textContent="Enter the 4-character PIN shown on the big screen.";return}
+  if(!n){$("joinErr").textContent="Enter a nickname so the others know who is holding the clock.";return}
+  if(!configured){$("joinErr").textContent="This copy of the game is not connected to Firebase yet.";return}
+  $("joinErr").textContent="";$("joinBtn").disabled=true;$("joinBtn").textContent="Joining…";
+  store.set("lss-name",n);
+  try{
+    await authReady;
+    const h=await get(rp(c,"host"));
+    if(!h.exists()){$("joinErr").textContent="No game with that PIN. Check the big screen and try again.";resetJoin();return}
+    const mine=(await get(rp(c,"players",uid))).val();
+    P.press=mine&&Number(mine.press)||0;
+    await set(rp(c,"players",uid),{name:n,press:P.press,online:true,joinedAt:Date.now()});
+    P.name=n;P.code=c;P.host=null;P.wasListed=false;
+    armPlayerDisconnect();
+    P.unsub.forEach(u=>u());P.unsub=[
+      onValue(rp(c,"state"),s=>{P.host=s.val();renderPlayer()}),
+      onValue(rp(c,"players",uid),s=>{if(!s.exists()&&P.code===c&&P.joinedOnce){kickedOut()}else if(s.exists())P.joinedOnce=true})
+    ];
+    $("pName").textContent=n;$("pCode").textContent="PIN "+c.toUpperCase();
+    view("player");renderPlayer();
+  }catch(err){$("joinErr").textContent="Could not join. Check your internet connection and the PIN, then try again."}
+  resetJoin();
+};
+function resetJoin(){$("joinBtn").disabled=false;$("joinBtn").textContent="Enter"}
+function armPlayerDisconnect(){if(P.code&&uid)onDisconnect(rp(P.code,"players",uid,"online")).set(false).catch(()=>{})}
+function leaveRoom(){
+  P.unsub.forEach(u=>u());P.unsub=[];
+  if(P.code&&uid){onDisconnect(rp(P.code,"players",uid,"online")).cancel().catch(()=>{});update(rp(P.code,"players",uid),{online:false}).catch(()=>{})}
+  P.code="";P.host=null;P.joinedOnce=false;
+}
+function kickedOut(){leaveRoom();view("home");$("joinErr").textContent="The host removed you from the game."}
+$("leave").onclick=()=>{leaveRoom();view("home")};
+
+function renderPlayer(){
+  const s=P.host,b=$("pBtn"),st=$("pStatus"),note=$("pNote");
+  b.className="big";b.disabled=true;note.textContent="";
+  if(!s){st.textContent="Waiting for the host";b.textContent="Wait";return}
+  if(s.on===false){st.textContent="The host screen disconnected";b.textContent="Wait";note.textContent="The game continues when the host is back.";return}
+  const pl=Array.isArray(s.pl)?s.pl:[];
+  const myI=pl.findIndex(x=>x.id===uid);
+  const me=pl[myI],cur=pl[s.i];
+  const pending=P.pendingSeq===s.seq&&Date.now()-P.pendingAt<2000;
+  if(s.ph==="lobby"){
+    st.textContent=me?"You're in! Watch the big screen.":"Joining the room…";
+    b.textContent="Ready";note.textContent=me?`${pl.length} players in the room`:"";return;
+  }
+  if(myI<0){st.textContent="Game in progress";b.textContent="Watch";note.textContent="You'll join when the host goes back to setup.";return}
+  if(s.ph==="roundover"||s.ph==="gameover"){
+    const lo=pl[s.lo];
+    if(s.ph==="gameover"){const w=pl[s.w];st.textContent=w&&w.id===uid?"You win!":`${w?w.n:"Someone"} wins`;b.textContent=w&&w.id===uid?"Winner":"Game over"}
+    else if(s.lo===myI){st.textContent=me.o?"Caught at zero. You're out.":"Caught at zero! You start next round.";b.textContent="Lost"}
+    else{st.textContent=`${lo?lo.n:"Someone"} was caught at zero`;b.textContent=me.o?"Out":"Phew"}
+    const rk="res-"+s.r+"-"+s.lo;if(P.lastResultKey!==rk){P.lastResultKey=rk;sfx("timeup");vibrate(s.lo===myI?[300,100,300]:0)}
+    return;
+  }
+  if(me.o){st.textContent="You're out. Watch the rest.";b.textContent="Out";return}
+  if(s.i!==myI){
+    st.textContent=cur?`${cur.n} is holding the clock`:"Wait for your turn";
+    b.textContent="Wait";
+    let k=0,j=s.i;for(let n=0;n<pl.length;n++){j=(j+1)%pl.length;if(!pl[j].o){k++;if(j===myI)break}}
+    note.textContent=k===1?"You're next. Get ready.":"";
+    return;
+  }
+  const key=s.r+"-"+s.i+"-"+s.t;
+  if(P.lastTurnKey!==key){P.lastTurnKey=key;vibrate(200)}
+  b.disabled=pending;
+  if(s.ph==="ready"){st.textContent="Your turn!";b.textContent="Start";b.classList.add("go")}
+  else if(s.cs){st.textContent="The clock is running";b.textContent="Stop";b.classList.add("stop")}
+  else{st.textContent="The clock is running";b.textContent="Hold…";b.classList.add("locked");note.textContent="Stop unlocks in a moment"}
+}
+$("pBtn").onclick=()=>{
+  const s=P.host;if(!s||!P.code)return;
+  if(s.ph==="running"&&!s.cs){sfx("locked");const b=$("pBtn");b.classList.remove("shake");void b.offsetWidth;b.classList.add("shake");return}
+  sfx(s.ph==="ready"?"start":"stop");
+  P.press++;P.pendingSeq=s.seq;P.pendingAt=Date.now();
+  update(rp(P.code,"players",uid),{press:P.press}).catch(()=>{});
+  $("pBtn").disabled=true;setTimeout(renderPlayer,2100);
+};
+function vibrate(p){try{if(p&&navigator.vibrate)navigator.vibrate(p)}catch(e){}}
+
+/* ---------- sound effects (generated, no audio files) ---------- */
+let ac;
+function audio(){try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();if(ac.state==="suspended")ac.resume();return ac}catch(e){return null}}
+function tone(type,f1,f2,start,dur,vol){
+  const a=audio();if(!a)return;const t=a.currentTime+start,o=a.createOscillator(),g=a.createGain();
+  o.type=type;o.frequency.setValueAtTime(f1,t);if(f2)o.frequency.exponentialRampToValueAtTime(f2,t+dur);
+  g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(vol,t+0.01);g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(g).connect(a.destination);o.start(t);o.stop(t+dur+0.02);
+}
+function sfx(kind){
+  try{
+    if(kind==="start"){tone("triangle",520,880,0,.12,.35);tone("triangle",880,1320,.1,.12,.3)}
+    else if(kind==="stop"){tone("triangle",880,440,0,.14,.35);tone("sine",330,220,.1,.12,.3)}
+    else if(kind==="locked"){tone("square",140,110,0,.12,.2)}
+    else if(kind==="tap"){tone("sine",660,0,0,.06,.2)}
+    else if(kind==="timeup"){[0,.18,.36].forEach((s,i)=>tone("sawtooth",i<2?260:180,i<2?240:90,s,i<2?.16:.9,.32))}
+  }catch(e){}
+}
+document.addEventListener("click",e=>{const b=e.target.closest("button");if(b&&!b.disabled&&b.id!=="hostPress"&&b.id!=="pBtn")sfx("tap")});
+
+checkResume();
+// test hook (harmless in production): lets automated checks read state
+window.__lss={G,P,get uid(){return uid}};
+</script>
+</body>
+</html>
