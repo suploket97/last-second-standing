@@ -281,6 +281,39 @@ const joinBase=location.origin+location.pathname;
 const prettyUrl=joinBase.replace(/^https?:\/\//,"").replace(/index\.html$/,"").replace(/\/$/,"");
 const PREFIX="last-second-standing-v1-";   // keeps our room IDs apart from other apps on the shared PeerJS service
 const peerOk=typeof window.Peer==="function";
+
+/* ================= RELAY SERVER (TURN) — fill in ONE option, see README ================= */
+/* Some networks (mobile data, guest Wi-Fi, schools, offices) block direct phone-to-screen
+   connections. A relay server passes the game messages along when that happens. */
+const RELAY={
+  // Option A — Metered (free 20 GB/month): paste your credentials URL, e.g.
+  // "https://yourapp.metered.live/api/v1/turn/credentials?apiKey=YOUR_API_KEY"
+  meteredUrl:"",
+  // Option B — any TURN service, e.g. ExpressTURN (free 1 TB/month): paste username and password
+  turnUrls:["turn:relay1.expressturn.com:3478?transport=udp","turn:relay1.expressturn.com:3478?transport=tcp","turns:relay1.expressturn.com:443?transport=tcp"],
+  turnUsername:"",
+  turnPassword:""
+};
+/* ======================================================================================== */
+const STUN=[{urls:["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]},{urls:"stun:stun.cloudflare.com:3478"}];
+// PeerJS's own free relay servers (no signup). Kept as a built-in fallback for blocked networks.
+const PEERJS_DEFAULT=(()=>{try{const d=window.peerjs&&peerjs.util&&peerjs.util.defaultConfig;if(d&&Array.isArray(d.iceServers))return d.iceServers.filter(s=>JSON.stringify(s).includes("turn:"))}catch(e){}
+  return [{urls:["turn:eu-0.turn.peerjs.com:3478","turn:us-0.turn.peerjs.com:3478"],username:"peerjs",credential:"peerjsp"}]})();
+let relayOn=false;
+const iceReady=(async()=>{
+  let servers=[...STUN,...PEERJS_DEFAULT];
+  try{
+    if(RELAY.meteredUrl){
+      const r=await fetch(RELAY.meteredUrl);const list=await r.json();
+      if(Array.isArray(list)&&list.length){servers=servers.concat(list);relayOn=true}
+    }
+  }catch(e){}
+  if(!relayOn&&RELAY.turnUsername&&RELAY.turnPassword){
+    servers.push({urls:RELAY.turnUrls,username:RELAY.turnUsername,credential:RELAY.turnPassword});relayOn=true;
+  }
+  return servers;
+})();
+async function peerOpts(){return {debug:0,config:{iceServers:await iceReady}}}
 function rid(n){const a="abcdefghijkmnpqrstuvwxyz23456789";let s="";for(let i=0;i<n;i++)s+=a[Math.floor(Math.random()*a.length)];return s}
 
 /* keep screens awake during a game (ignored where not supported) */
@@ -294,8 +327,8 @@ const G={phase:"lobby",total:60,rule:"starter",minHold:1,blind:false,players:[],
 let code="", hostPeer=null, roster={}, lastPress={}, kicked=new Set(), localId=0;
 
 function openHostPeer(c){
-  return new Promise((res,rej)=>{
-    const p=new Peer(PREFIX+c,{debug:0});
+  return new Promise(async(res,rej)=>{
+    const p=new Peer(PREFIX+c,await peerOpts());
     const fail=e=>{p.off("open");try{p.destroy()}catch(_){}rej(e)};
     p.once("open",()=>{p.off("error",fail);res(p)});
     p.once("error",fail);
@@ -597,20 +630,26 @@ $("joinForm").onsubmit=async e=>{
   store.set("lss-name",n);
   const savedPress=Number(store.get("lss-press-"+c))||0;
   P.name=n;P.code=c;P.press=savedPress;P.host=null;P.joined=false;
-  const ok=await connectToHost(true);
+  let r=await connectToHost(true);
+  if(r==="ice"){$("joinBtn").textContent="Still connecting…";r=await connectToHost(true)}  // one automatic retry
+  if(r==="ice")$("joinErr").textContent=relayOn
+    ?"Could not connect to the big screen, even through the relay server. Check your internet connection and try again."
+    :"Your phone found the game, but this network blocked the connection. Join the same Wi-Fi as the big screen (not a guest network), turn off any VPN, and try again.";
+  const ok=r===true;
   resetJoin();
   if(ok){$("pName").textContent=n;$("pCode").textContent="PIN "+c.toUpperCase();view("player");renderPlayer()}
 };
 function resetJoin(){$("joinBtn").disabled=false;$("joinBtn").textContent="Enter"}
 
 function ensurePeer(){
-  return new Promise((res,rej)=>{
+  return new Promise(async(res,rej)=>{
+    const opts=await peerOpts();
     if(P.peer&&!P.peer.destroyed){
       if(P.peer.open)return res(P.peer);
       if(P.peer.disconnected){try{P.peer.reconnect()}catch(e){}}
       P.peer.once("open",()=>res(P.peer));setTimeout(()=>rej(new Error("timeout")),8000);return;
     }
-    const p=new Peer({debug:0});P.peer=p;
+    const p=new Peer(opts);P.peer=p;
     p.once("open",()=>res(p));
     p.on("error",e=>{if(P.onPeerError)P.onPeerError(e)});
     p.on("disconnected",()=>{setTimeout(()=>{try{if(!p.destroyed)p.reconnect()}catch(e){}},1500)});
@@ -628,9 +667,13 @@ function connectToHost(first){
       if(e&&e.type==="peer-unavailable"){if(first)$("joinErr").textContent="No game with that PIN. Check the big screen and try again.";finish(false)}
     };
     const conn=P.peer.connect(PREFIX+c,{reliable:true,metadata:{v:1}});
-    const timer=setTimeout(()=>{if(!conn.open){try{conn.close()}catch(e){}if(first)$("joinErr").textContent="Found the game but could not connect to it. Make sure your phone and the big screen are on the same Wi-Fi, then try again.";finish(false)}},12000);
+    const iceFail=()=>{if(conn.open||done)return;clearTimeout(timer);clearInterval(watch);try{conn.close()}catch(e){}finish("ice")};
+    const timer=setTimeout(iceFail,20000);
+    // notice a blocked connection early instead of waiting for the full timeout
+    const watch=setInterval(()=>{const pc=conn.peerConnection;if(!pc)return;clearInterval(watch);
+      pc.addEventListener("iceconnectionstatechange",()=>{if(pc.iceConnectionState==="failed")iceFail()})},300);
     conn.on("open",()=>{
-      clearTimeout(timer);
+      clearTimeout(timer);clearInterval(watch);
       if(P.conn&&P.conn!==conn){try{P.conn.close()}catch(e){}}
       P.conn=conn;P.joined=true;P.retry=0;
       conn.send({t:"hello",pid,name:P.name,press:P.press});
@@ -648,7 +691,7 @@ function connectToHost(first){
 function scheduleReconnect(){
   if(!P.code||!P.joined)return;
   const wait=Math.min(5000,1000+P.retry*1000);P.retry++;
-  setTimeout(async()=>{if(P.code&&!P.conn){const ok=await connectToHost(false);if(!ok)scheduleReconnect()}},wait);
+  setTimeout(async()=>{if(P.code&&!P.conn){const r=await connectToHost(false);if(r!==true)scheduleReconnect()}},wait);
 }
 function setConn(ok){const c=$("pConn");c.textContent=ok?"":"Reconnecting to the big screen…";c.classList.toggle("bad",!ok);if(!ok)renderPlayer()}
 function endPlayer(msg){
